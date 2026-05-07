@@ -130,3 +130,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Isaac Sim URDF/Mesh converter cache artifacts
+assets/foosball_table/.asset_hash
+assets/foosball_table/config.yaml
+assets/foosball_table/configuration/
+assets/foosball_table/foosball_table.usd
+assets/foosball_table/meshes/*.stl

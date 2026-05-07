@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "foos"
+version = "0.2.0"
+description = "Experimental foosball learning environment on NVIDIA Isaac Lab"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [
+    { name = "ekf", email = "ekf@mit.edu" },
+    { name = "wernerpe" },
+]
+
+# Isaac Sim and Isaac Lab are environment prerequisites installed out of band
+# (see README). They bring their own pinned torch + CUDA wheels, so do not list
+# them here.
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/foos"]

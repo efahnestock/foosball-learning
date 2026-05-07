@@ -16,166 +16,310 @@
   </link>
 
 
-  <link name="empty_goalie_team_1"/>
+  <link name="empty_goalie_team_1">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.0005 0.0005 0.0005"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.0005 0.0005 0.0005"/>
+      </geometry>
+    </collision>
+  </link>
   <link name="goalie_team_1">
     <visual>
-      <origin xyz="0.0 0.0 0.0"/>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <mesh filename="meshes/1-bar-centered_team_1.obj" scale="1 1 1"/>
+        <cylinder length="1.08" radius="0.008"/>
       </geometry>
     </visual>
     <collision>
-      <origin xyz="0.0 0.0 0.0"/>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <mesh filename="meshes/1-bar-centered.obj_team_1" scale="1 1 1"/>
+        <cylinder length="1.08" radius="0.008"/>
       </geometry>
     </collision>
     <inertial>
       <mass value="0.7638"/>
-      <inertia ixx="0.099" ixy="-0.000001283" ixz="0.000000003289" iyy="0.0" iyz="0.00004499" izz="0.099"/>
+      <inertia ixx="0.099" ixy="-0.000001283" ixz="0.000000003289" iyy="0.0001" iyz="0.00004499" izz="0.099"/>
     </inertial>
   </link>
 
-  <link name="empty_2_bar_team_1"/>
-  <link name="2_bar_team_1">
+  <link name="empty_bar2_team_1">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
     <visual>
-      <origin xyz="0.0 0.0 0.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/2-bar-centered_team_1.obj" scale="1 1 1"/>
+        <box size="0.0005 0.0005 0.0005"/>
       </geometry>
     </visual>
     <collision>
-      <origin xyz="0.0 0.0 0.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/2-bar-centered_team_1.obj" scale="1 1 1"/>
+        <box size="0.0005 0.0005 0.0005"/>
       </geometry>
     </collision>
-    <inertial>
-      <mass value="0.7638"/>
-      <inertia ixx="0.099" ixy="-0.000001283" ixz="0.000000003289" iyy="0.0" iyz="0.00004499" izz="0.099"/>
-    </inertial>
   </link>
-
-  <link name="empty_5_bar_team_1"/>
-  <link name="5_bar_team_1">
+  <link name="bar2_team_1">
     <visual>
-      <origin xyz="0.0 0.0 0.0"/>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <mesh filename="meshes/5-bar-centered_team_1.obj" scale="1 1 1"/>
+        <cylinder length="1.08" radius="0.008"/>
       </geometry>
     </visual>
     <collision>
-      <origin xyz="0.0 0.0 0.0"/>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <mesh filename="meshes/5-bar-centered_team_1.obj" scale="1 1 1"/>
+        <cylinder length="1.08" radius="0.008"/>
       </geometry>
     </collision>
     <inertial>
       <mass value="0.7638"/>
-      <inertia ixx="0.099" ixy="-0.000001283" ixz="0.000000003289" iyy="0.0" iyz="0.00004499" izz="0.099"/>
+      <inertia ixx="0.099" ixy="-0.000001283" ixz="0.000000003289" iyy="0.0001" iyz="0.00004499" izz="0.099"/>
     </inertial>
   </link>
 
-  <link name="empty_3_bar_team_1"/>
-  <link name="3_bar_team_1">
+  <link name="empty_bar5_team_1">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
     <visual>
-      <origin xyz="0.0 0.0 0.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/3-bar-centered_team_1.obj" scale="1 1 1"/>
+        <box size="0.0005 0.0005 0.0005"/>
       </geometry>
     </visual>
     <collision>
-      <origin xyz="0.0 0.0 0.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/3-bar-centered_team_1.obj" scale="1 1 1"/>
+        <box size="0.0005 0.0005 0.0005"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="bar5_team_1">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder length="1.08" radius="0.008"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder length="1.08" radius="0.008"/>
       </geometry>
     </collision>
     <inertial>
       <mass value="0.7638"/>
-      <inertia ixx="0.099" ixy="-0.000001283" ixz="0.000000003289" iyy="0.0" iyz="0.00004499" izz="0.099"/>
+      <inertia ixx="0.099" ixy="-0.000001283" ixz="0.000000003289" iyy="0.0001" iyz="0.00004499" izz="0.099"/>
+    </inertial>
+  </link>
+
+  <link name="empty_bar3_team_1">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.0005 0.0005 0.0005"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.0005 0.0005 0.0005"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="bar3_team_1">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder length="1.08" radius="0.008"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder length="1.08" radius="0.008"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.7638"/>
+      <inertia ixx="0.099" ixy="-0.000001283" ixz="0.000000003289" iyy="0.0001" iyz="0.00004499" izz="0.099"/>
     </inertial>
   </link>
 
 
 
 
-  <link name="empty_goalie_team_2"/>
+  <link name="empty_goalie_team_2">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.0005 0.0005 0.0005"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.0005 0.0005 0.0005"/>
+      </geometry>
+    </collision>
+  </link>
   <link name="goalie_team_2">
     <visual>
-      <origin xyz="0.0 0.0 0.0"/>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <mesh filename="meshes/1-bar-centered_team_2.obj" scale="1 1 1"/>
+        <cylinder length="1.08" radius="0.008"/>
       </geometry>
     </visual>
     <collision>
-      <origin xyz="0.0 0.0 0.0"/>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <mesh filename="meshes/1-bar-centered_team_2.obj" scale="1 1 1"/>
+        <cylinder length="1.08" radius="0.008"/>
       </geometry>
     </collision>
     <inertial>
       <mass value="0.7638"/>
-      <inertia ixx="0.099" ixy="-0.000001283" ixz="0.000000003289" iyy="0.0" iyz="0.00004499" izz="0.099"/>
+      <inertia ixx="0.099" ixy="-0.000001283" ixz="0.000000003289" iyy="0.0001" iyz="0.00004499" izz="0.099"/>
     </inertial>
   </link>
 
-  <link name="empty_2_bar_team_2"/>
-  <link name="2_bar_team_2">
+  <link name="empty_bar2_team_2">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
     <visual>
-      <origin xyz="0.0 0.0 0.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/2-bar-centered_team_2.obj" scale="1 1 1"/>
+        <box size="0.0005 0.0005 0.0005"/>
       </geometry>
     </visual>
     <collision>
-      <origin xyz="0.0 0.0 0.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/2-bar-centered_team_2.obj" scale="1 1 1"/>
+        <box size="0.0005 0.0005 0.0005"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="bar2_team_2">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder length="1.08" radius="0.008"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder length="1.08" radius="0.008"/>
       </geometry>
     </collision>
     <inertial>
       <mass value="0.7638"/>
-      <inertia ixx="0.099" ixy="-0.000001283" ixz="0.000000003289" iyy="0.0" iyz="0.00004499" izz="0.099"/>
+      <inertia ixx="0.099" ixy="-0.000001283" ixz="0.000000003289" iyy="0.0001" iyz="0.00004499" izz="0.099"/>
     </inertial>
   </link>
 
-  <link name="empty_5_bar_team_2"/>
-  <link name="5_bar_team_2">
+  <link name="empty_bar5_team_2">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
     <visual>
-      <origin xyz="0.0 0.0 0.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/5-bar-centered_team_2.obj" scale="1 1 1"/>
+        <box size="0.0005 0.0005 0.0005"/>
       </geometry>
     </visual>
     <collision>
-      <origin xyz="0.0 0.0 0.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/5-bar-centered_team_2.obj" scale="1 1 1"/>
+        <box size="0.0005 0.0005 0.0005"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="bar5_team_2">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder length="1.08" radius="0.008"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder length="1.08" radius="0.008"/>
       </geometry>
     </collision>
     <inertial>
       <mass value="0.7638"/>
-      <inertia ixx="0.099" ixy="-0.000001283" ixz="0.000000003289" iyy="0.0" iyz="0.00004499" izz="0.099"/>
+      <inertia ixx="0.099" ixy="-0.000001283" ixz="0.000000003289" iyy="0.0001" iyz="0.00004499" izz="0.099"/>
     </inertial>
   </link>
 
-  <link name="empty_3_bar_team_2"/>
-  <link name="3_bar_team_2">
+  <link name="empty_bar3_team_2">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
     <visual>
-      <origin xyz="0.0 0.0 0.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/3-bar-centered_team_2.obj" scale="1 1 1"/>
+        <box size="0.0005 0.0005 0.0005"/>
       </geometry>
     </visual>
     <collision>
-      <origin xyz="0.0 0.0 0.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/3-bar-centered_team_2.obj" scale="1 1 1"/>
+        <box size="0.0005 0.0005 0.0005"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="bar3_team_2">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder length="1.08" radius="0.008"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder length="1.08" radius="0.008"/>
       </geometry>
     </collision>
     <inertial>
       <mass value="0.7638"/>
-      <inertia ixx="0.099" ixy="-0.000001283" ixz="0.000000003289" iyy="0.0" iyz="0.00004499" izz="0.099"/>
+      <inertia ixx="0.099" ixy="-0.000001283" ixz="0.000000003289" iyy="0.0001" iyz="0.00004499" izz="0.099"/>
     </inertial>
   </link>
 
@@ -190,45 +334,53 @@
   <parent link="empty_goalie_team_1"/>
   <child link="goalie_team_1"/>
   <axis xyz="0 1 0"/>
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <limit effort="9999" velocity="9999" lower="-100.0" upper="100.0"/>
 </joint>
 
-<joint name="2_bar_team_1_prismatic_joint" type="prismatic">
+<joint name="bar2_team_1_prismatic_joint" type="prismatic">
   <parent link="table"/>
-  <child link="empty_2_bar_team_1"/>
+  <child link="empty_bar2_team_1"/>
   <limit effort="9999" velocity="9999" lower="-0.187" upper="0.187"/>
   <axis xyz="0 1 0"/>
   <origin xyz="0.375 0.0 0.360054"/>
 </joint>
-<joint name="2_bar_team_1_revolute_joint" type="revolute">
-  <parent link="empty_2_bar_team_1"/>
-  <child link="2_bar_team_1"/>
+<joint name="bar2_team_1_revolute_joint" type="revolute">
+  <parent link="empty_bar2_team_1"/>
+  <child link="bar2_team_1"/>
   <axis xyz="0 1 0"/>
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <limit effort="9999" velocity="9999" lower="-100.0" upper="100.0"/>
 </joint>
 
-<joint name="5_bar_team_1_prismatic_joint" type="prismatic">
+<joint name="bar5_team_1_prismatic_joint" type="prismatic">
   <parent link="table"/>
-  <child link="empty_5_bar_team_1"/>
+  <child link="empty_bar5_team_1"/>
   <limit effort="9999" velocity="9999" lower="-0.077" upper="0.077"/>
   <axis xyz="0 1 0"/>
   <origin xyz="0.075 0.031126 0.360054"/>
 </joint>
-<joint name="5_bar_team_1_revolute_joint" type="revolute">
-  <parent link="empty_5_bar_team_1"/>
-  <child link="5_bar_team_1"/>
+<joint name="bar5_team_1_revolute_joint" type="revolute">
+  <parent link="empty_bar5_team_1"/>
+  <child link="bar5_team_1"/>
   <axis xyz="0 1 0"/>
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <limit effort="9999" velocity="9999" lower="-100.0" upper="100.0"/>
 </joint>
 
-<joint name="3_bar_team_1_prismatic_joint" type="prismatic">
+<joint name="bar3_team_1_prismatic_joint" type="prismatic">
   <parent link="table"/>
-  <child link="empty_3_bar_team_1"/>
+  <child link="empty_bar3_team_1"/>
   <limit effort="9999" velocity="9999" lower="-0.117" upper="0.117"/>
   <axis xyz="0 1 0"/>
   <origin xyz="-0.225 0.0 0.360054"/>
 </joint>
-<joint name="3_bar_team_1_revolute_joint" type="revolute">
-  <parent link="empty_3_bar_team_1"/>
-  <child link="3_bar_team_1"/>
+<joint name="bar3_team_1_revolute_joint" type="revolute">
+  <parent link="empty_bar3_team_1"/>
+  <child link="bar3_team_1"/>
   <axis xyz="0 1 0"/>
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <limit effort="9999" velocity="9999" lower="-100.0" upper="100.0"/>
 </joint>
 
 
@@ -247,45 +399,53 @@
   <parent link="empty_goalie_team_2"/>
   <child link="goalie_team_2"/>
   <axis xyz="0 1 0"/>
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <limit effort="9999" velocity="9999" lower="-100.0" upper="100.0"/>
 </joint>
 
-<joint name="2_bar_team_2_prismatic_joint" type="prismatic">
+<joint name="bar2_team_2_prismatic_joint" type="prismatic">
   <parent link="table"/>
-  <child link="empty_2_bar_team_2"/>
+  <child link="empty_bar2_team_2"/>
   <limit effort="9999" velocity="9999" lower="-0.187" upper="0.187"/>
   <axis xyz="0 1 0"/>
   <origin xyz="-0.375 0.0 0.360054" rpy="0 0 3.1415"/>
 </joint>
-<joint name="2_bar_team_2_revolute_joint" type="revolute">
-  <parent link="empty_2_bar_team_2"/>
-  <child link="2_bar_team_2"/>
+<joint name="bar2_team_2_revolute_joint" type="revolute">
+  <parent link="empty_bar2_team_2"/>
+  <child link="bar2_team_2"/>
   <axis xyz="0 1 0"/>
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <limit effort="9999" velocity="9999" lower="-100.0" upper="100.0"/>
 </joint>
 
-<joint name="5_bar_team_2_prismatic_joint" type="prismatic">
+<joint name="bar5_team_2_prismatic_joint" type="prismatic">
   <parent link="table"/>
-  <child link="empty_5_bar_team_2"/>
+  <child link="empty_bar5_team_2"/>
   <limit effort="9999" velocity="9999" lower="-0.077" upper="0.077"/>
   <axis xyz="0 1 0"/>
   <origin xyz="-0.075 -0.031126 0.360054" rpy="0 0 3.1415"/>
 </joint>
-<joint name="5_bar_team_2_revolute_joint" type="revolute">
-  <parent link="empty_5_bar_team_2"/>
-  <child link="5_bar_team_2"/>
+<joint name="bar5_team_2_revolute_joint" type="revolute">
+  <parent link="empty_bar5_team_2"/>
+  <child link="bar5_team_2"/>
   <axis xyz="0 1 0" />
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <limit effort="9999" velocity="9999" lower="-100.0" upper="100.0"/>
 </joint>
 
-<joint name="3_bar_team_2_prismatic_joint" type="prismatic">
+<joint name="bar3_team_2_prismatic_joint" type="prismatic">
   <parent link="table"/>
-  <child link="empty_3_bar_team_2"/>
+  <child link="empty_bar3_team_2"/>
   <limit effort="9999" velocity="9999" lower="-0.117" upper="0.117"/>
   <axis xyz="0 1 0"/>
   <origin xyz="0.225 0.0 0.360054" rpy="0 0 3.1415"/>
 </joint>
-<joint name="3_bar_team_2_revolute_joint" type="revolute">
-  <parent link="empty_3_bar_team_2"/>
-  <child link="3_bar_team_2"/>
+<joint name="bar3_team_2_revolute_joint" type="revolute">
+  <parent link="empty_bar3_team_2"/>
+  <child link="bar3_team_2"/>
   <axis xyz="0 1 0"/>
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <limit effort="9999" velocity="9999" lower="-100.0" upper="100.0"/>
 </joint>
 
 
