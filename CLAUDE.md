@@ -32,12 +32,35 @@ The IsaacLab repo lives at `../IsaacLab` (a sibling of this repo). It's installe
 
 ## Repository layout
 
-- `src/foos/envs/foos_env.py` — `FoosEnv(DirectRLEnv)` + `FoosEnvCfg(DirectRLEnvCfg)`. Action space 16, observation space 39 (stub: joint pos/vel + ball pos/lin_vel + phase placeholder). Stub reward and dones.
+- `src/foos/envs/foos_env.py` — `FoosEnv(DirectRLEnv)` + `FoosEnvCfg(DirectRLEnvCfg)`. Action space 16, observation space 38 (joint pos/vel + ball pos/lin_vel). Reward is ball-speed shaping + scoring bonuses + action regularization.
 - `src/foos/assets_cfg/foosball_table.py` — `FOOSBALL_TABLE_CFG` (`ArticulationCfg`) loading the URDF. Two `ImplicitActuatorCfg` groups keyed by joint-name regex (`.*_prismatic_joint`, `.*_revolute_joint`).
 - `src/foos/assets_cfg/ball.py` — `BALL_CFG` (`RigidObjectCfg`) with `SphereCfg` spawn. The mesh `assets/foosball_table/meshes/ball.obj` is intentionally unused.
+- `src/foos/agents/rl_games_ppo_cfg.yaml` — PPO hyperparameters consumed by `scripts/train_foos.py`. Network `[256, 128, 64]` with elu, `learning_rate=3e-4`, `horizon_length=32`, `minibatch_size=16384`. Tune `entropy_coef` if exploration is poor.
+- `src/foos/__init__.py` — registers `Foos-v0` with gymnasium using *string* entry points so import doesn't pull in `isaaclab` / `pxr`.
 - `scripts/play_foos.py` — standalone viewer runner. `AppLauncher` is constructed before any `foos.*`/`isaaclab.*` imports — that ordering is mandatory.
+- `scripts/train_foos.py` — headless rl_games PPO trainer. Same AppLauncher ordering. Logs to `logs/rl_games/foos_direct/<timestamp>/`.
 - `scripts/regenerate_meshes.py` — recolors per-team OBJ meshes. Run from repo root: `python scripts/regenerate_meshes.py`. Re-run after editing source meshes or team colors.
 - `assets/foosball_table/foosball_table.urdf` — 16-DOF articulation: 4 rods/team × 2 teams × (1 prismatic + 1 revolute joint). Root link `table` is fixed. Mesh refs (`meshes/...`) resolve relative to the URDF.
+
+## Reward + termination geometry
+
+The single-agent shakeout reward (team-1-favoring) lives in `FoosEnvCfg`:
+
+- `rew_scale_ball_speed=0.05` (always-on, encourages motion)
+- `rew_scale_action=-1e-3 * |a|^2` (regularization)
+- `rew_scale_goal_team1=+10` (ball into team 2's net, terminal)
+- `rew_scale_goal_team2=-10` (ball into team 1's net, terminal)
+- `rew_scale_oob=-2` (off the side / fell through, terminal)
+
+Goal/OOB classification in `_get_dones`:
+
+- `bx < -ball_x_limit` ⇒ team 1 scored (ball past team 2's goalie at x=-0.525)
+- `bx > +ball_x_limit` ⇒ team 2 scored (ball past team 1's goalie at x=+0.525)
+- `|by| > ball_y_limit` or `bz < ball_z_min` ⇒ out-of-play
+
+Per-step termination flags are stashed on `self._goal_team*` / `self._oob` in `_get_dones` and consumed by `_get_rewards` later in the same `step()` call (DirectRLEnv runs dones before rewards). Cumulative scores live in `self._score_team*` and surface via `extras["log"]` for tensorboard.
+
+When swapping in self-play, the pieces to replace are: (1) action-space split + opponent-snapshot policy, (2) reward sign-flip from per-team perspective, (3) symmetric obs/action mirroring along the X axis. The reward weights and goal classifier should stay as-is.
 
 ## Key conventions
 

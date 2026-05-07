@@ -53,11 +53,38 @@ Other modes:
 - `--mode zero` — rods at rest; ball settles and rolls. Confirms gravity and table collision.
 - `--mode random` — uniform noise on all 16 joints; chaotic kicks.
 
+## Train
+
+Single-agent shakeout with PPO via rl_games:
+
+```bash
+source .venv/bin/activate
+OMNI_KIT_ACCEPT_EULA=YES python scripts/train_foos.py \
+    --num_envs 4096 --max_iterations 1500 --headless
+```
+
+The agent controls all 16 joints. Reward = ball-speed shaping + scoring bonuses (team 1 scoring rewarded, team 2 scoring penalized) + small action cost. Episodes terminate on goal or out-of-bounds. Logs land in `logs/rl_games/foos_direct/<timestamp>/` — point TensorBoard at that directory.
+
+To watch a trained checkpoint:
+
+```bash
+# in one shell, train (or finish a run)
+# then in another, replay the latest checkpoint with the viewer/livestream
+OMNI_KIT_ACCEPT_EULA=YES python scripts/train_foos.py \
+    --num_envs 4 --livestream 2 \
+    --checkpoint logs/rl_games/foos_direct/<timestamp>/nn/foos_direct.pth
+```
+
+(Note: `train_foos.py` always runs in train mode for now. A separate `play_foos_ckpt.py` is a small follow-up.)
+
 ## Layout
 
 - `src/foos/envs/foos_env.py` — `FoosEnv` (`DirectRLEnv`) and `FoosEnvCfg`
 - `src/foos/assets_cfg/foosball_table.py` — `ArticulationCfg` for the URDF
 - `src/foos/assets_cfg/ball.py` — `RigidObjectCfg` for the primitive-sphere ball
-- `scripts/play_foos.py` — standalone viewer runner
+- `src/foos/agents/rl_games_ppo_cfg.yaml` — PPO hyperparameters for rl_games
+- `src/foos/__init__.py` — registers `Foos-v0` with gymnasium
+- `scripts/play_foos.py` — standalone viewer runner (random/sine actions, no policy)
+- `scripts/train_foos.py` — headless PPO training entry point
 - `scripts/regenerate_meshes.py` — recolor per-team OBJ meshes (red = team 1, blue = team 2)
 - `assets/foosball_table/` — URDF and OBJ meshes (consumed unchanged)

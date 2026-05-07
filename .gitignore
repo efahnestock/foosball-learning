@@ -137,3 +137,7 @@ assets/foosball_table/config.yaml
 assets/foosball_table/configuration/
 assets/foosball_table/foosball_table.usd
 assets/foosball_table/meshes/*.stl
+
+# Training run logs / checkpoints
+logs/
+

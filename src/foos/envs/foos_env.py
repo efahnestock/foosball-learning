@@ -53,8 +53,8 @@ class FoosEnvCfg(DirectRLEnvCfg):
 
     # 16 joints = 8 prismatic (slide) + 8 revolute (spin), one pair per rod.
     action_space = 16
-    # 16 q + 16 qdot + 3 ball pos + 3 ball lin_vel + 1 phase placeholder = 39
-    observation_space = 39
+    # 16 q + 16 qdot + 3 ball pos + 3 ball lin_vel = 38
+    observation_space = 38
     state_space = 0
 
     robot: object = FOOSBALL_TABLE_CFG.replace(
@@ -75,9 +75,19 @@ class FoosEnvCfg(DirectRLEnvCfg):
     # Ball-out-of-play bounds in env-local frame. Resetting when the ball
     # leaves these limits keeps episodes finite once we wire up rewards.
     # Table footprint: |x| ~= 0.78, |y| ~= 0.40; field surface ~= z=0.84.
+    # Ball exits along +/-X are treated as goals (team 2's / team 1's nets);
+    # exits along Y or below z_min count as out-of-play.
     ball_x_limit: float = 0.7
     ball_y_limit: float = 0.42
     ball_z_min: float = 0.5
+
+    # Reward weights for the single-agent shakeout. The agent controls all 16
+    # DOFs; reward favors team 1 scoring on team 2.
+    rew_scale_ball_speed: float = 0.05         # encourage ball motion
+    rew_scale_action: float = -1.0e-3          # mild action regularization
+    rew_scale_goal_team1: float = 10.0         # ball into team 2's net
+    rew_scale_goal_team2: float = -10.0        # ball into team 1's net (penalty)
+    rew_scale_oob: float = -2.0                # ball off the side / fell through
 
 
 class FoosEnv(DirectRLEnv):
@@ -104,7 +114,17 @@ class FoosEnv(DirectRLEnv):
         )
 
         self._action_targets = self._joint_default.clone()
-        self._phase = torch.zeros(self.num_envs, 1, device=self.device)
+        self._last_actions = torch.zeros_like(self._action_targets)
+
+        # Per-step termination flags, set in _get_dones and consumed by
+        # _get_rewards in the same step (DirectRLEnv runs dones before rewards).
+        self._goal_team1 = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._goal_team2 = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._oob = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+        # Cumulative score counters for tensorboard logging.
+        self._score_team1 = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._score_team2 = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
     def _setup_scene(self):
         self.table = Articulation(self.cfg.robot)
@@ -135,7 +155,9 @@ class FoosEnv(DirectRLEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         # actions in [-1, 1]; offset from neutral pose by per-joint scale.
-        self._action_targets = self._joint_default + actions.clamp(-1.0, 1.0) * self._joint_scale
+        clipped = actions.clamp(-1.0, 1.0)
+        self._action_targets = self._joint_default + clipped * self._joint_scale
+        self._last_actions = clipped
 
     def _apply_action(self) -> None:
         self.table.set_joint_position_target(self._action_targets)
@@ -144,29 +166,58 @@ class FoosEnv(DirectRLEnv):
         joint_pos = self.table.data.joint_pos
         joint_vel = self.table.data.joint_vel
 
-        # Ball pose/velocity in env-local frame (subtract env origin).
         ball_pos = self.ball.data.root_pos_w - self.scene.env_origins
         ball_lin_vel = self.ball.data.root_lin_vel_w
 
-        obs = torch.cat(
-            [joint_pos, joint_vel, ball_pos, ball_lin_vel, self._phase],
-            dim=-1,
-        )
+        obs = torch.cat([joint_pos, joint_vel, ball_pos, ball_lin_vel], dim=-1)
         return {"policy": obs}
-
-    def _get_rewards(self) -> torch.Tensor:
-        return torch.zeros(self.num_envs, device=self.device)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         truncated = self.episode_length_buf >= self.max_episode_length - 1
-        # Terminate if the ball has left the playing field.
         ball_pos = self.ball.data.root_pos_w - self.scene.env_origins
-        out_of_bounds = (
-            (ball_pos[:, 0].abs() > self.cfg.ball_x_limit)
-            | (ball_pos[:, 1].abs() > self.cfg.ball_y_limit)
-            | (ball_pos[:, 2] < self.cfg.ball_z_min)
+        bx, by, bz = ball_pos[:, 0], ball_pos[:, 1], ball_pos[:, 2]
+
+        # Ball exits along +X go into team 1's goal (team 1 conceded). Along
+        # -X into team 2's goal (team 2 conceded). Goalie x-positions are
+        # +/-0.525, so x_limit=0.7 is well past them.
+        self._goal_team1 = bx < -self.cfg.ball_x_limit  # team 1 scored
+        self._goal_team2 = bx > self.cfg.ball_x_limit   # team 2 scored
+        self._oob = (by.abs() > self.cfg.ball_y_limit) | (bz < self.cfg.ball_z_min)
+
+        terminated = self._goal_team1 | self._goal_team2 | self._oob
+
+        # Update cumulative score counters before reset wipes them.
+        self._score_team1 += self._goal_team1.long()
+        self._score_team2 += self._goal_team2.long()
+
+        return terminated, truncated
+
+    def _get_rewards(self) -> torch.Tensor:
+        cfg = self.cfg
+        ball_lin_vel = self.ball.data.root_lin_vel_w
+        ball_speed = ball_lin_vel[:, :2].norm(dim=-1)
+
+        action_cost = self._last_actions.square().sum(dim=-1)
+
+        rew = (
+            cfg.rew_scale_ball_speed * ball_speed
+            + cfg.rew_scale_action * action_cost
+            + cfg.rew_scale_goal_team1 * self._goal_team1.float()
+            + cfg.rew_scale_goal_team2 * self._goal_team2.float()
+            + cfg.rew_scale_oob * self._oob.float()
         )
-        return out_of_bounds, truncated
+
+        # Surface per-component means in extras for tensorboard.
+        self.extras["log"] = {
+            "rew/ball_speed": (cfg.rew_scale_ball_speed * ball_speed).mean(),
+            "rew/action_cost": (cfg.rew_scale_action * action_cost).mean(),
+            "rew/goal_team1": (cfg.rew_scale_goal_team1 * self._goal_team1.float()).mean(),
+            "rew/goal_team2": (cfg.rew_scale_goal_team2 * self._goal_team2.float()).mean(),
+            "rew/oob": (cfg.rew_scale_oob * self._oob.float()).mean(),
+            "score/team1_total": self._score_team1.float().mean(),
+            "score/team2_total": self._score_team2.float().mean(),
+        }
+        return rew
 
     def _reset_idx(self, env_ids: torch.Tensor | None) -> None:
         if env_ids is None or len(env_ids) == self.num_envs:
@@ -189,4 +240,4 @@ class FoosEnv(DirectRLEnv):
         self.ball.write_root_pose_to_sim(ball_root_state[:, :7], env_ids=env_ids)
         self.ball.write_root_velocity_to_sim(ball_root_state[:, 7:], env_ids=env_ids)
 
-        self._phase[env_ids] = 0.0
+        self._last_actions[env_ids] = 0.0
