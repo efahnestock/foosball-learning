@@ -81,18 +81,24 @@ class FoosEnvCfg(DirectRLEnvCfg):
     ball_y_limit: float = 0.42
     ball_z_min: float = 0.5
 
-    # Reward weights for the "score any goal, fast" objective.
-    # We use *directional* shaping (|ball.vx| only) instead of generic ball
-    # speed: only motion along the goal axis is rewarded, so a policy that
-    # spins rods to make the ball jiggle in place earns nothing. Pure-sparse
-    # goal reward without any shaping was empirically too sparse for PPO to
-    # discover (500 epochs, never scored).
+    # Reward weights for the "score any goal, fast, smoothly" objective.
+    # Directional shaping only (|ball.vx|) — generic ball speed produced
+    # rod-spinners that gamed the dense signal. Action-delta penalty is the
+    # real lever for non-twitchy motion; magnitude cost just keeps rods off
+    # the joint stops. OOB is set on the order of the goal bonus so kicking
+    # the ball off the side hurts as much as a goal helps.
     rew_scale_ball_speed: float = 0.0          # off — replaced by directional below
     rew_scale_ball_x_speed: float = 0.05       # |ball.vx|: nudge toward either net
-    rew_scale_action: float = -5.0e-3          # punish rod thrashing
+    rew_scale_action: float = -5.0e-3          # mild magnitude cost (smoothness
+                                               # below is the real anti-twitch lever;
+                                               # raising magnitude cost any further
+                                               # collapses exploration to "rods idle")
+    rew_scale_action_delta: float = -1.0e-3    # punish step-to-step thrashing
     rew_scale_step: float = -0.05              # time pressure: score fast
     rew_scale_goal: float = 10.0               # ball into either net (sparse)
-    rew_scale_oob: float = -2.0                # ball off the side / fell through
+    rew_scale_oob: float = -5.0                # ball off the side / fell through
+                                               # (2.5x original; -10 was too harsh
+                                               # combined with smoothness penalty)
 
 
 class FoosEnv(DirectRLEnv):
@@ -119,7 +125,11 @@ class FoosEnv(DirectRLEnv):
         )
 
         self._action_targets = self._joint_default.clone()
+        # `_last_actions` tracks the action commanded *this* step (after clip);
+        # `_prev_actions` tracks the previous step, used to compute the
+        # smoothness delta penalty.
         self._last_actions = torch.zeros_like(self._action_targets)
+        self._prev_actions = torch.zeros_like(self._action_targets)
 
         # Per-step termination flags, set in _get_dones and consumed by
         # _get_rewards in the same step (DirectRLEnv runs dones before rewards).
@@ -166,6 +176,7 @@ class FoosEnv(DirectRLEnv):
         # actions in [-1, 1]; offset from neutral pose by per-joint scale.
         clipped = actions.clamp(-1.0, 1.0)
         self._action_targets = self._joint_default + clipped * self._joint_scale
+        self._prev_actions = self._last_actions
         self._last_actions = clipped
 
     def _apply_action(self) -> None:
@@ -209,6 +220,7 @@ class FoosEnv(DirectRLEnv):
         ball_x_speed = ball_lin_vel[:, 0].abs()  # along the goal axis
 
         action_cost = self._last_actions.square().sum(dim=-1)
+        action_delta = (self._last_actions - self._prev_actions).square().sum(dim=-1)
         step_penalty = torch.full(
             (self.num_envs,), cfg.rew_scale_step, device=self.device
         )
@@ -217,6 +229,7 @@ class FoosEnv(DirectRLEnv):
             cfg.rew_scale_ball_speed * ball_speed
             + cfg.rew_scale_ball_x_speed * ball_x_speed
             + cfg.rew_scale_action * action_cost
+            + cfg.rew_scale_action_delta * action_delta
             + step_penalty
             + cfg.rew_scale_goal * self._goal_any.float()
             + cfg.rew_scale_oob * self._oob.float()
@@ -227,6 +240,7 @@ class FoosEnv(DirectRLEnv):
             "rew/ball_speed": (cfg.rew_scale_ball_speed * ball_speed).mean(),
             "rew/ball_x_speed": (cfg.rew_scale_ball_x_speed * ball_x_speed).mean(),
             "rew/action_cost": (cfg.rew_scale_action * action_cost).mean(),
+            "rew/action_delta": (cfg.rew_scale_action_delta * action_delta).mean(),
             "rew/step": step_penalty.mean(),
             "rew/goal_any": (cfg.rew_scale_goal * self._goal_any.float()).mean(),
             "rew/oob": (cfg.rew_scale_oob * self._oob.float()).mean(),
@@ -258,3 +272,4 @@ class FoosEnv(DirectRLEnv):
         self.ball.write_root_velocity_to_sim(ball_root_state[:, 7:], env_ids=env_ids)
 
         self._last_actions[env_ids] = 0.0
+        self._prev_actions[env_ids] = 0.0

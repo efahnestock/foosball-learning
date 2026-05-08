@@ -67,9 +67,13 @@ FOOSBALL_TABLE_CFG = ArticulationCfg(
         "revolute": ImplicitActuatorCfg(
             joint_names_expr=[".*_revolute_joint"],
             stiffness=20.0,          # TUNABLE
-            damping=1.0,             # TUNABLE
+            damping=1.0,             # TUNABLE — keeps rods responsive enough
+                                     # to snap-kick. Tried 5.0 to reduce twitch
+                                     # but it stalled training; the action_delta
+                                     # reward penalty handles smoothness instead.
             effort_limit_sim=20.0,   # TUNABLE
-            velocity_limit_sim=30.0, # TUNABLE — high to allow snap-kicks
+            velocity_limit_sim=30.0, # TUNABLE — high to allow snap-kicks. 12.0
+                                     # made kicking infeasible.
         ),
     },
 )
