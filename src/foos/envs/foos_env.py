@@ -101,24 +101,30 @@ class FoosEnvCfg(DirectRLEnvCfg):
     # piece: previous shapings either rewarded any motion (rod-spinners) or
     # static proximity (ball-parkers).
     rew_scale_v_toward_goal: float = 0.1
-    rew_scale_action: float = -5.0e-3          # mild magnitude cost (smoothness
-                                               # below is the real anti-twitch lever;
-                                               # raising magnitude cost any further
-                                               # collapses exploration to "rods idle")
-    rew_scale_action_delta: float = -1.0e-3    # mild; LPF below is the real
-                                               # smoothness mechanism, the reward
-                                               # penalty doubles up too much when
-                                               # set higher — the policy goes idle
-    rew_scale_step: float = -0.02              # softer time pressure (was -0.05)
-                                               # so idle isn't disproportionately
-                                               # cheaper than risky scoring
-    rew_scale_goal: float = 25.0               # bigger payoff so scoring beats idle
-                                               # by enough margin to overcome the
-                                               # off-mouth-x risk on the way
-    rew_scale_oob: float = -3.0                # gentler than -5 so the policy
-                                               # is willing to risk a kick attempt;
-                                               # also includes "past goalie x but
-                                               # outside goal mouth" (back corners)
+    rew_scale_action: float = 0.0              # off during goal-discovery phase.
+                                               # Action-cost penalty makes random
+                                               # exploration look bad even when the
+                                               # ball never moves; with this off,
+                                               # only terminal goal/OOB & v_toward
+                                               # shape the policy. Re-enable once
+                                               # the agent reliably scores.
+    rew_scale_action_delta: float = 0.0        # off during goal-discovery phase
+                                               # (LPF in _pre_physics_step still
+                                               # smooths the actual joint targets)
+    rew_scale_step: float = 0.0                # no time pressure: with sparse
+                                               # goals, step penalty pushes the
+                                               # policy to "idle and time out
+                                               # quietly" since random kicks
+                                               # don't reliably score
+    rew_scale_goal: float = 100.0              # huge payoff so any non-zero
+                                               # scoring rate beats idle. Even
+                                               # 1% success * 100 = +1, vs idle's
+                                               # ~-9 (action cost only)
+    rew_scale_oob: float = 0.0                 # zero penalty for missed kicks.
+                                               # The policy needs to ATTEMPT;
+                                               # even -3 made attempts net-negative
+                                               # vs idle. Episodes still terminate
+                                               # on OOB, just with no extra cost.
 
     # Action low-pass filter (per-step blend factor). Action targets are
     # smoothed via a first-order IIR before being sent to PhysX:
@@ -127,6 +133,20 @@ class FoosEnvCfg(DirectRLEnvCfg):
     # kicking — the action target couldn't snap fast enough to form a kick
     # before the ball moved past, and the policy converged on idle.
     action_smoothing_alpha: float = 0.35
+
+    # Curriculum: at reset, sample ball X position from
+    #   sign * Uniform(spawn_x_near, spawn_x_far)
+    # with sign +/-1 chosen uniformly. With near=0.65, far=0.69, the ball
+    # spawns *past* the goalie (at x=0.525) and just shy of the goal mouth
+    # (x=0.70). Combined with ball_spawn_vx_toward_goal below, every episode
+    # starts with the ball moving into a goal — almost-automatic scoring
+    # gives the policy a strong reward signal to bootstrap from. Once
+    # scoring is reliable, dial these toward 0 to expand the distribution.
+    ball_spawn_x_near: float = 0.0
+    ball_spawn_x_far: float = 0.35
+    # Initial X velocity at spawn, signed toward the closer goal. Now zero —
+    # the policy has to drive the ball forward unaided. Real play conditions.
+    ball_spawn_vx_toward_goal: float = 0.0
 
 
 class FoosEnv(DirectRLEnv):
@@ -317,13 +337,31 @@ class FoosEnv(DirectRLEnv):
         joint_vel = torch.zeros_like(joint_pos)
         self.table.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
-        # Drop ball at table center with a small random XY jitter.
+        # Curriculum spawn: ball positioned past the goalie + initial velocity
+        # toward the same goal. Y jitter kept small so the ball lands on the
+        # playing surface rather than on a side wall.
         n = len(env_ids)
-        jitter = torch.empty(n, 2, device=self.device).uniform_(-0.05, 0.05)
+        near = self.cfg.ball_spawn_x_near
+        far = self.cfg.ball_spawn_x_far
+        if near == 0.0 and far == 0.0:
+            x_offset = torch.zeros(n, 1, device=self.device)
+            sign = torch.zeros(n, 1, device=self.device)
+        else:
+            mag = torch.empty(n, 1, device=self.device).uniform_(near, far)
+            sign = torch.where(
+                torch.rand(n, 1, device=self.device) < 0.5,
+                torch.tensor(-1.0, device=self.device),
+                torch.tensor(1.0, device=self.device),
+            )
+            x_offset = sign * mag
+        y_offset = torch.empty(n, 1, device=self.device).uniform_(-0.05, 0.05)
         ball_root_state = self.ball.data.default_root_state[env_ids].clone()
         ball_root_state[:, :3] += self.scene.env_origins[env_ids]
-        ball_root_state[:, 0:2] += jitter
+        ball_root_state[:, 0:1] += x_offset
+        ball_root_state[:, 1:2] += y_offset
         ball_root_state[:, 7:13] = 0.0  # zero linear + angular velocity
+        # Pre-launch ball toward closer goal (sign already encodes direction).
+        ball_root_state[:, 7:8] = sign * self.cfg.ball_spawn_vx_toward_goal
         self.ball.write_root_pose_to_sim(ball_root_state[:, :7], env_ids=env_ids)
         self.ball.write_root_velocity_to_sim(ball_root_state[:, 7:], env_ids=env_ids)
 
