@@ -47,12 +47,15 @@ The IsaacLab repo lives at `../IsaacLab` (a sibling of this repo). It's installe
 Current reward is **"score any goal, fast"** — pure-sparse goal bonus + time pressure. Lives in `FoosEnvCfg`:
 
 - `rew_scale_ball_speed=0` (off — earlier dense |speed| shaping at 0.05 dominated the goal signal and produced rod-spinning policies that never scored)
-- `rew_scale_ball_x_speed=0.05 * |ball.vx|` (**directional** shaping: only motion along the goal axis earns reward, so jittering the ball in place doesn't help; this exists because pure-sparse goal reward turned out to be too hard for PPO to discover within 500 epochs)
+- `rew_scale_ball_x_speed=0` (off — replaced by `v_toward_goal`)
+- `rew_scale_goal_proximity=0` (off — proximity-only created a "park ball near goal mouth and milk reward without scoring" exploit)
+- `rew_scale_v_toward_goal=0.1 * vx · sign(bx)` (signed, **not** clamped): x-velocity toward whichever goal mouth the ball is closer to. This is potential-based shaping: the per-episode sum telescopes to `|x_final| − |x_initial|`, so oscillating the ball nets zero. With a `clamp(min=0)`, the agent farms reward by pushing forward then pulling back at no cost — never scores. Without the clamp, the only way to accumulate net-positive shaping is to actually drive the ball outward.
 - `rew_scale_action=-5e-3 * |a|^2` (mild; magnitude cost above 1e-2 collapsed exploration to "rods idle" — the smoothness penalty below is the real anti-twitch lever, not magnitude)
-- `rew_scale_action_delta=-1e-3 * |a_t - a_{t-1}|^2` (punish step-to-step thrashing — this is the actual lever against twitchy motion; magnitude alone isn't enough since +1/−1 oscillation has constant `|a|^2`)
+- `rew_scale_action_delta=-5e-3 * |a_t - a_{t-1}|^2` (punish step-to-step thrashing; -1e-3 was visibly too soft)
 - `rew_scale_step=-0.05` (per-step time penalty; rewards finishing the episode via goal vs. timing out)
-- `rew_scale_goal=+10` (terminal, fired on either team scoring)
-- `rew_scale_oob=-5` (terminal, off-side or fell-through; 2.5× the previous baseline of −2; pushing to −10 stalled training)
+- `rew_scale_goal=+10` (terminal, fired only when ball is past the goalie x-line **and** inside the goal mouth `|y| < goal_mouth_half_width`; defaults to 0.10 m half-width ≈ 21 cm wide opening)
+- `rew_scale_oob=-5` (terminal, off-side or fell-through, *or* past the goalie line but outside the goal mouth — without this last condition the policy farms "goals" by knocking the ball off the table edge)
+- `action_smoothing_alpha=0.2`: per-step low-pass filter on the action targets, ~80 ms time constant at 60 Hz to approximate human reaction. PD gains alone make rod responses near-instant (rod inertia is `1e-4 kg·m²`, ω_n ~ 450 rad/s).
 
 Reward arithmetic: a fast scorer (~30 steps, |vx|~1) ≈ `+10 − 1.5 (step) + 1.5 (x-speed) − action ≈ +9`. An idle policy times out at 1800 steps ≈ `−90`. Strong gradient toward fast scoring.
 

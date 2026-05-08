@@ -75,11 +75,13 @@ class FoosEnvCfg(DirectRLEnvCfg):
     # Ball-out-of-play bounds in env-local frame. Resetting when the ball
     # leaves these limits keeps episodes finite once we wire up rewards.
     # Table footprint: |x| ~= 0.78, |y| ~= 0.40; field surface ~= z=0.84.
-    # Ball exits along +/-X are treated as goals (team 2's / team 1's nets);
-    # exits along Y or below z_min count as out-of-play.
-    ball_x_limit: float = 0.7
-    ball_y_limit: float = 0.42
-    ball_z_min: float = 0.5
+    # A goal counts only when the ball is past the goalie X-line *and*
+    # inside the narrow goal mouth in Y. Anything past X but outside the
+    # mouth (e.g. ball flying off the side of the table) is OOB, not a goal.
+    ball_x_limit: float = 0.7              # past goalie line
+    ball_y_limit: float = 0.42             # off-side bound
+    ball_z_min: float = 0.5                # fell-through bound
+    goal_mouth_half_width: float = 0.10    # half-width of the goal opening (m)
 
     # Reward weights for the "score any goal, fast, smoothly" objective.
     # Directional shaping only (|ball.vx|) — generic ball speed produced
@@ -87,18 +89,44 @@ class FoosEnvCfg(DirectRLEnvCfg):
     # real lever for non-twitchy motion; magnitude cost just keeps rods off
     # the joint stops. OOB is set on the order of the goal bonus so kicking
     # the ball off the side hurts as much as a goal helps.
-    rew_scale_ball_speed: float = 0.0          # off — replaced by directional below
-    rew_scale_ball_x_speed: float = 0.05       # |ball.vx|: nudge toward either net
+    rew_scale_ball_speed: float = 0.0          # off — replaced by directed below
+    rew_scale_ball_x_speed: float = 0.0        # off — replaced by directed below
+    rew_scale_goal_proximity: float = 0.0      # off — proximity-only is a trap:
+                                               # the policy parked the ball near a
+                                               # mouth and milked the bonus instead
+                                               # of scoring (zero actual goals)
+    # x-velocity *toward* the nearest goal mouth, clipped at zero.
+    # Positive only when the ball is actively being driven into a goal —
+    # parking earns nothing, motion away earns nothing. This was the missing
+    # piece: previous shapings either rewarded any motion (rod-spinners) or
+    # static proximity (ball-parkers).
+    rew_scale_v_toward_goal: float = 0.1
     rew_scale_action: float = -5.0e-3          # mild magnitude cost (smoothness
                                                # below is the real anti-twitch lever;
                                                # raising magnitude cost any further
                                                # collapses exploration to "rods idle")
-    rew_scale_action_delta: float = -1.0e-3    # punish step-to-step thrashing
-    rew_scale_step: float = -0.05              # time pressure: score fast
-    rew_scale_goal: float = 10.0               # ball into either net (sparse)
-    rew_scale_oob: float = -5.0                # ball off the side / fell through
-                                               # (2.5x original; -10 was too harsh
-                                               # combined with smoothness penalty)
+    rew_scale_action_delta: float = -1.0e-3    # mild; LPF below is the real
+                                               # smoothness mechanism, the reward
+                                               # penalty doubles up too much when
+                                               # set higher — the policy goes idle
+    rew_scale_step: float = -0.02              # softer time pressure (was -0.05)
+                                               # so idle isn't disproportionately
+                                               # cheaper than risky scoring
+    rew_scale_goal: float = 25.0               # bigger payoff so scoring beats idle
+                                               # by enough margin to overcome the
+                                               # off-mouth-x risk on the way
+    rew_scale_oob: float = -3.0                # gentler than -5 so the policy
+                                               # is willing to risk a kick attempt;
+                                               # also includes "past goalie x but
+                                               # outside goal mouth" (back corners)
+
+    # Action low-pass filter (per-step blend factor). Action targets are
+    # smoothed via a first-order IIR before being sent to PhysX:
+    #   target := alpha * new + (1 - alpha) * prev_target
+    # alpha=0.35 at 60 Hz => ~50 ms time constant. 0.2 was too laggy for
+    # kicking — the action target couldn't snap fast enough to form a kick
+    # before the ball moved past, and the policy converged on idle.
+    action_smoothing_alpha: float = 0.35
 
 
 class FoosEnv(DirectRLEnv):
@@ -174,8 +202,12 @@ class FoosEnv(DirectRLEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         # actions in [-1, 1]; offset from neutral pose by per-joint scale.
+        # Then low-pass filter the target so PD doesn't snap from one pose to
+        # the next on every step.
         clipped = actions.clamp(-1.0, 1.0)
-        self._action_targets = self._joint_default + clipped * self._joint_scale
+        target_raw = self._joint_default + clipped * self._joint_scale
+        alpha = self.cfg.action_smoothing_alpha
+        self._action_targets = alpha * target_raw + (1.0 - alpha) * self._action_targets
         self._prev_actions = self._last_actions
         self._last_actions = clipped
 
@@ -197,13 +229,22 @@ class FoosEnv(DirectRLEnv):
         ball_pos = self.ball.data.root_pos_w - self.scene.env_origins
         bx, by, bz = ball_pos[:, 0], ball_pos[:, 1], ball_pos[:, 2]
 
-        # Ball exits along +X go into team 1's goal (team 1 conceded). Along
-        # -X into team 2's goal (team 2 conceded). Goalie x-positions are
-        # +/-0.525, so x_limit=0.7 is well past them.
-        self._goal_team1 = bx < -self.cfg.ball_x_limit  # team 1 scored
-        self._goal_team2 = bx > self.cfg.ball_x_limit   # team 2 scored
+        # A goal requires both: ball past the goalie X line AND inside the
+        # narrow goal mouth in Y. Past X but off-mouth (ball flying off the
+        # back corners) is OOB, not a goal — without this Y check, training
+        # rewards "ball crossed the goal line anywhere on the table edge".
+        in_mouth = by.abs() < self.cfg.goal_mouth_half_width
+        past_x_neg = bx < -self.cfg.ball_x_limit
+        past_x_pos = bx > self.cfg.ball_x_limit
+        self._goal_team1 = past_x_neg & in_mouth   # ball into team 2's net
+        self._goal_team2 = past_x_pos & in_mouth   # ball into team 1's net
         self._goal_any = self._goal_team1 | self._goal_team2
-        self._oob = (by.abs() > self.cfg.ball_y_limit) | (bz < self.cfg.ball_z_min)
+        off_mouth_x = (past_x_neg | past_x_pos) & ~in_mouth
+        self._oob = (
+            (by.abs() > self.cfg.ball_y_limit)
+            | (bz < self.cfg.ball_z_min)
+            | off_mouth_x
+        )
 
         terminated = self._goal_any | self._oob
 
@@ -215,9 +256,22 @@ class FoosEnv(DirectRLEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         cfg = self.cfg
+        ball_pos_local = self.ball.data.root_pos_w - self.scene.env_origins
         ball_lin_vel = self.ball.data.root_lin_vel_w
         ball_speed = ball_lin_vel[:, :2].norm(dim=-1)
-        ball_x_speed = ball_lin_vel[:, 0].abs()  # along the goal axis
+        ball_x_speed = ball_lin_vel[:, 0].abs()
+        bx = ball_pos_local[:, 0]
+
+        # Signed velocity toward the nearest goal mouth. Positive when ball
+        # heads outward (toward closer net), negative when it heads inward.
+        # IMPORTANT: do NOT clamp at zero — without the clamp this is a
+        # proper potential-based shaping (sum over episode telescopes to
+        # |x_final| - |x_initial|), so oscillating the ball nets zero and
+        # the policy can't farm reward by pushing-then-pulling. With the
+        # clamp, the agent can repeatedly push forward, take negative motion
+        # for free, and accumulate large fake rewards without ever scoring.
+        sign_to_nearest = torch.sign(bx)  # closer goal is on the same side
+        v_toward = ball_lin_vel[:, 0] * sign_to_nearest
 
         action_cost = self._last_actions.square().sum(dim=-1)
         action_delta = (self._last_actions - self._prev_actions).square().sum(dim=-1)
@@ -228,6 +282,7 @@ class FoosEnv(DirectRLEnv):
         rew = (
             cfg.rew_scale_ball_speed * ball_speed
             + cfg.rew_scale_ball_x_speed * ball_x_speed
+            + cfg.rew_scale_v_toward_goal * v_toward
             + cfg.rew_scale_action * action_cost
             + cfg.rew_scale_action_delta * action_delta
             + step_penalty
@@ -239,6 +294,7 @@ class FoosEnv(DirectRLEnv):
         self.extras["log"] = {
             "rew/ball_speed": (cfg.rew_scale_ball_speed * ball_speed).mean(),
             "rew/ball_x_speed": (cfg.rew_scale_ball_x_speed * ball_x_speed).mean(),
+            "rew/v_toward_goal": (cfg.rew_scale_v_toward_goal * v_toward).mean(),
             "rew/action_cost": (cfg.rew_scale_action * action_cost).mean(),
             "rew/action_delta": (cfg.rew_scale_action_delta * action_delta).mean(),
             "rew/step": step_penalty.mean(),
@@ -273,3 +329,6 @@ class FoosEnv(DirectRLEnv):
 
         self._last_actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0
+        # Re-anchor the low-pass-filtered targets at the neutral pose so the
+        # next episode doesn't inherit the previous one's smoothed trajectory.
+        self._action_targets[env_ids] = self._joint_default[env_ids]
