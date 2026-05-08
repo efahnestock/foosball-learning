@@ -81,13 +81,14 @@ class FoosEnvCfg(DirectRLEnvCfg):
     ball_y_limit: float = 0.42
     ball_z_min: float = 0.5
 
-    # Reward weights for the single-agent shakeout. The agent controls all 16
-    # DOFs; reward favors team 1 scoring on team 2.
-    rew_scale_ball_speed: float = 0.05         # encourage ball motion
-    rew_scale_action: float = -1.0e-3          # mild action regularization
-    rew_scale_goal_team1: float = 10.0         # ball into team 2's net
-    rew_scale_goal_team2: float = -10.0        # ball into team 1's net (penalty)
-    rew_scale_oob: float = -2.0                # ball off the side / fell through
+    # Reward weights for the single-agent "any-goal" shakeout. Symmetric:
+    # either side scoring earns the same bonus, so the policy can't game an
+    # asymmetric signal by sandbagging one team. Dense ball-speed term keeps
+    # exploration tractable for vanilla PPO; goal bonus is the real objective.
+    rew_scale_ball_speed: float = 0.05         # encourage ball motion (dense)
+    rew_scale_action: float = -5.0e-4          # mild action regularization
+    rew_scale_goal: float = 5.0                # ball into either net (sparse)
+    rew_scale_oob: float = -1.0                # ball off the side / fell through
 
 
 class FoosEnv(DirectRLEnv):
@@ -118,11 +119,15 @@ class FoosEnv(DirectRLEnv):
 
         # Per-step termination flags, set in _get_dones and consumed by
         # _get_rewards in the same step (DirectRLEnv runs dones before rewards).
+        # We still track per-side goals separately (handy for future self-play
+        # logging) but the reward only sees `_goal_any`.
         self._goal_team1 = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._goal_team2 = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._goal_any = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._oob = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
-        # Cumulative score counters for tensorboard logging.
+        # Cumulative goal counter for tensorboard logging. Per-team breakdown
+        # is kept too so we can spot if the policy only scores in one direction.
         self._score_team1 = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._score_team2 = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
@@ -182,9 +187,10 @@ class FoosEnv(DirectRLEnv):
         # +/-0.525, so x_limit=0.7 is well past them.
         self._goal_team1 = bx < -self.cfg.ball_x_limit  # team 1 scored
         self._goal_team2 = bx > self.cfg.ball_x_limit   # team 2 scored
+        self._goal_any = self._goal_team1 | self._goal_team2
         self._oob = (by.abs() > self.cfg.ball_y_limit) | (bz < self.cfg.ball_z_min)
 
-        terminated = self._goal_team1 | self._goal_team2 | self._oob
+        terminated = self._goal_any | self._oob
 
         # Update cumulative score counters before reset wipes them.
         self._score_team1 += self._goal_team1.long()
@@ -202,8 +208,7 @@ class FoosEnv(DirectRLEnv):
         rew = (
             cfg.rew_scale_ball_speed * ball_speed
             + cfg.rew_scale_action * action_cost
-            + cfg.rew_scale_goal_team1 * self._goal_team1.float()
-            + cfg.rew_scale_goal_team2 * self._goal_team2.float()
+            + cfg.rew_scale_goal * self._goal_any.float()
             + cfg.rew_scale_oob * self._oob.float()
         )
 
@@ -211,9 +216,9 @@ class FoosEnv(DirectRLEnv):
         self.extras["log"] = {
             "rew/ball_speed": (cfg.rew_scale_ball_speed * ball_speed).mean(),
             "rew/action_cost": (cfg.rew_scale_action * action_cost).mean(),
-            "rew/goal_team1": (cfg.rew_scale_goal_team1 * self._goal_team1.float()).mean(),
-            "rew/goal_team2": (cfg.rew_scale_goal_team2 * self._goal_team2.float()).mean(),
+            "rew/goal_any": (cfg.rew_scale_goal * self._goal_any.float()).mean(),
             "rew/oob": (cfg.rew_scale_oob * self._oob.float()).mean(),
+            "score/goals_total": (self._score_team1 + self._score_team2).float().mean(),
             "score/team1_total": self._score_team1.float().mean(),
             "score/team2_total": self._score_team2.float().mean(),
         }

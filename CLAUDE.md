@@ -44,13 +44,14 @@ The IsaacLab repo lives at `../IsaacLab` (a sibling of this repo). It's installe
 
 ## Reward + termination geometry
 
-The single-agent shakeout reward (team-1-favoring) lives in `FoosEnvCfg`:
+Current reward is the **symmetric "any-goal"** flavor — either team scoring earns the same bonus, so a single policy controlling all 16 DOFs can't game an asymmetric signal by sandbagging one side. Lives in `FoosEnvCfg`:
 
-- `rew_scale_ball_speed=0.05` (always-on, encourages motion)
-- `rew_scale_action=-1e-3 * |a|^2` (regularization)
-- `rew_scale_goal_team1=+10` (ball into team 2's net, terminal)
-- `rew_scale_goal_team2=-10` (ball into team 1's net, terminal)
-- `rew_scale_oob=-2` (off the side / fell through, terminal)
+- `rew_scale_ball_speed=0.05` (dense; bootstraps exploration before goals are reachable)
+- `rew_scale_action=-5e-4 * |a|^2` (mild action regularization)
+- `rew_scale_goal=+5` (terminal, fired on either team scoring)
+- `rew_scale_oob=-1` (terminal, off-side or fell-through)
+
+The earlier asymmetric reward (`+10` team_1, `-10` team_2) is gone; we'll reintroduce per-side asymmetry once we add self-play and each side has its own policy. Per-team scoring counters (`score/team{1,2}_total`) are still logged so you can verify the policy isn't always scoring in the same net.
 
 Goal/OOB classification in `_get_dones`:
 
