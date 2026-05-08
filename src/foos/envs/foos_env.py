@@ -81,14 +81,18 @@ class FoosEnvCfg(DirectRLEnvCfg):
     ball_y_limit: float = 0.42
     ball_z_min: float = 0.5
 
-    # Reward weights for the single-agent "any-goal" shakeout. Symmetric:
-    # either side scoring earns the same bonus, so the policy can't game an
-    # asymmetric signal by sandbagging one team. Dense ball-speed term keeps
-    # exploration tractable for vanilla PPO; goal bonus is the real objective.
-    rew_scale_ball_speed: float = 0.05         # encourage ball motion (dense)
-    rew_scale_action: float = -5.0e-4          # mild action regularization
-    rew_scale_goal: float = 5.0                # ball into either net (sparse)
-    rew_scale_oob: float = -1.0                # ball off the side / fell through
+    # Reward weights for the "score any goal, fast" objective.
+    # We use *directional* shaping (|ball.vx| only) instead of generic ball
+    # speed: only motion along the goal axis is rewarded, so a policy that
+    # spins rods to make the ball jiggle in place earns nothing. Pure-sparse
+    # goal reward without any shaping was empirically too sparse for PPO to
+    # discover (500 epochs, never scored).
+    rew_scale_ball_speed: float = 0.0          # off — replaced by directional below
+    rew_scale_ball_x_speed: float = 0.05       # |ball.vx|: nudge toward either net
+    rew_scale_action: float = -5.0e-3          # punish rod thrashing
+    rew_scale_step: float = -0.05              # time pressure: score fast
+    rew_scale_goal: float = 10.0               # ball into either net (sparse)
+    rew_scale_oob: float = -2.0                # ball off the side / fell through
 
 
 class FoosEnv(DirectRLEnv):
@@ -202,12 +206,18 @@ class FoosEnv(DirectRLEnv):
         cfg = self.cfg
         ball_lin_vel = self.ball.data.root_lin_vel_w
         ball_speed = ball_lin_vel[:, :2].norm(dim=-1)
+        ball_x_speed = ball_lin_vel[:, 0].abs()  # along the goal axis
 
         action_cost = self._last_actions.square().sum(dim=-1)
+        step_penalty = torch.full(
+            (self.num_envs,), cfg.rew_scale_step, device=self.device
+        )
 
         rew = (
             cfg.rew_scale_ball_speed * ball_speed
+            + cfg.rew_scale_ball_x_speed * ball_x_speed
             + cfg.rew_scale_action * action_cost
+            + step_penalty
             + cfg.rew_scale_goal * self._goal_any.float()
             + cfg.rew_scale_oob * self._oob.float()
         )
@@ -215,7 +225,9 @@ class FoosEnv(DirectRLEnv):
         # Surface per-component means in extras for tensorboard.
         self.extras["log"] = {
             "rew/ball_speed": (cfg.rew_scale_ball_speed * ball_speed).mean(),
+            "rew/ball_x_speed": (cfg.rew_scale_ball_x_speed * ball_x_speed).mean(),
             "rew/action_cost": (cfg.rew_scale_action * action_cost).mean(),
+            "rew/step": step_penalty.mean(),
             "rew/goal_any": (cfg.rew_scale_goal * self._goal_any.float()).mean(),
             "rew/oob": (cfg.rew_scale_oob * self._oob.float()).mean(),
             "score/goals_total": (self._score_team1 + self._score_team2).float().mean(),

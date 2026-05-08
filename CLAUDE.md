@@ -44,14 +44,18 @@ The IsaacLab repo lives at `../IsaacLab` (a sibling of this repo). It's installe
 
 ## Reward + termination geometry
 
-Current reward is the **symmetric "any-goal"** flavor — either team scoring earns the same bonus, so a single policy controlling all 16 DOFs can't game an asymmetric signal by sandbagging one side. Lives in `FoosEnvCfg`:
+Current reward is **"score any goal, fast"** — pure-sparse goal bonus + time pressure. Lives in `FoosEnvCfg`:
 
-- `rew_scale_ball_speed=0.05` (dense; bootstraps exploration before goals are reachable)
-- `rew_scale_action=-5e-4 * |a|^2` (mild action regularization)
-- `rew_scale_goal=+5` (terminal, fired on either team scoring)
-- `rew_scale_oob=-1` (terminal, off-side or fell-through)
+- `rew_scale_ball_speed=0` (off — earlier dense |speed| shaping at 0.05 dominated the goal signal and produced rod-spinning policies that never scored)
+- `rew_scale_ball_x_speed=0.05 * |ball.vx|` (**directional** shaping: only motion along the goal axis earns reward, so jittering the ball in place doesn't help; this exists because pure-sparse goal reward turned out to be too hard for PPO to discover within 500 epochs)
+- `rew_scale_action=-5e-3 * |a|^2` (punish rod thrashing)
+- `rew_scale_step=-0.05` (per-step time penalty; rewards finishing the episode via goal vs. timing out)
+- `rew_scale_goal=+10` (terminal, fired on either team scoring)
+- `rew_scale_oob=-2` (terminal, off-side or fell-through)
 
-The earlier asymmetric reward (`+10` team_1, `-10` team_2) is gone; we'll reintroduce per-side asymmetry once we add self-play and each side has its own policy. Per-team scoring counters (`score/team{1,2}_total`) are still logged so you can verify the policy isn't always scoring in the same net.
+Reward arithmetic: a fast scorer (~30 steps, |vx|~1) ≈ `+10 − 1.5 (step) + 1.5 (x-speed) − action ≈ +9`. An idle policy times out at 1800 steps ≈ `−90`. Strong gradient toward fast scoring.
+
+Per-team scoring counters (`score/team{1,2}_total` and `score/goals_total`) are still logged so you can verify the policy isn't always scoring in the same net. We'll reintroduce per-side asymmetric reward once we add self-play and each side has its own policy.
 
 Goal/OOB classification in `_get_dones`:
 
