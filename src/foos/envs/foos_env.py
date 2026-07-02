@@ -489,8 +489,13 @@ class FoosEnv(DirectRLEnv):
         if getattr(self.cfg, "log_terminations", False):
             for env_id in range(self.num_envs):
                 if self._goal_any[env_id]:
+                    # _goal_team1 fires when ball crossed to -x (into team
+                    # 2's net) — team 1 scored. And vice versa.
+                    scorer = "team1" if self._goal_team1[env_id] else "team2"
+                    net = "team2's net" if self._goal_team1[env_id] else "team1's net"
                     print(
-                        f"[GOAL] env={env_id} bx={bx[env_id].item():+.3f} "
+                        f"[GOAL] scorer={scorer} into {net} env={env_id} "
+                        f"bx={bx[env_id].item():+.3f} "
                         f"by={by[env_id].item():+.3f} bz={bz[env_id].item():+.3f}",
                         flush=True,
                     )
