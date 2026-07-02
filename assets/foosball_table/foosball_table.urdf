@@ -7,12 +7,12 @@
         <mesh filename="meshes/table.obj" scale="0.001 0.001 0.001"/>
       </geometry>
     </visual>
-    <collision>
-      <origin xyz="0.0 0.0 0.0"/>
-      <geometry>
-        <mesh filename="meshes/table.obj" scale="0.001 0.001 0.001"/>
-      </geometry>
-    </collision>
+    <!-- No <collision> block: the OBJ mesh is an open shell that PhysX
+         can't approximate (convex_decomp seals the playing-field cavity;
+         SDF can't compute inside/outside on a non-watertight mesh).
+         FoosEnv._build_primitive_table_collision spawns primitive cuboid
+         colliders (floor + 4 side walls + 2 back-wall pairs flanking each
+         goal mouth) when use_primitive_table_collision=True. -->
   </link>
 
 
@@ -28,12 +28,6 @@
         <box size="0.0005 0.0005 0.0005"/>
       </geometry>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <box size="0.0005 0.0005 0.0005"/>
-      </geometry>
-    </collision>
   </link>
   <link name="goalie_team_1">
     <visual>
@@ -66,12 +60,6 @@
         <box size="0.0005 0.0005 0.0005"/>
       </geometry>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <box size="0.0005 0.0005 0.0005"/>
-      </geometry>
-    </collision>
   </link>
   <link name="bar2_team_1">
     <visual>
@@ -104,12 +92,6 @@
         <box size="0.0005 0.0005 0.0005"/>
       </geometry>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <box size="0.0005 0.0005 0.0005"/>
-      </geometry>
-    </collision>
   </link>
   <link name="bar5_team_1">
     <visual>
@@ -142,12 +124,6 @@
         <box size="0.0005 0.0005 0.0005"/>
       </geometry>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <box size="0.0005 0.0005 0.0005"/>
-      </geometry>
-    </collision>
   </link>
   <link name="bar3_team_1">
     <visual>
@@ -183,12 +159,6 @@
         <box size="0.0005 0.0005 0.0005"/>
       </geometry>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <box size="0.0005 0.0005 0.0005"/>
-      </geometry>
-    </collision>
   </link>
   <link name="goalie_team_2">
     <visual>
@@ -221,12 +191,6 @@
         <box size="0.0005 0.0005 0.0005"/>
       </geometry>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <box size="0.0005 0.0005 0.0005"/>
-      </geometry>
-    </collision>
   </link>
   <link name="bar2_team_2">
     <visual>
@@ -259,12 +223,6 @@
         <box size="0.0005 0.0005 0.0005"/>
       </geometry>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <box size="0.0005 0.0005 0.0005"/>
-      </geometry>
-    </collision>
   </link>
   <link name="bar5_team_2">
     <visual>
@@ -297,12 +255,6 @@
         <box size="0.0005 0.0005 0.0005"/>
       </geometry>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <box size="0.0005 0.0005 0.0005"/>
-      </geometry>
-    </collision>
   </link>
   <link name="bar3_team_2">
     <visual>

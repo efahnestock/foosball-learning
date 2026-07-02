@@ -30,6 +30,12 @@ parser.add_argument("--max_iterations", type=int, default=None, help="PPO epochs
 parser.add_argument("--seed", type=int, default=None, help="RNG seed")
 parser.add_argument("--checkpoint", type=str, default=None, help="Checkpoint path to resume from")
 parser.add_argument("--sigma", type=str, default=None, help="Initial action stddev override")
+parser.add_argument(
+    "--save_frequency",
+    type=int,
+    default=None,
+    help="Override save_frequency (default 100 from yaml).",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 # Headless training by default — videos/streaming would slow us down.
@@ -77,6 +83,8 @@ def main() -> None:
 
     if args_cli.max_iterations is not None:
         agent_cfg["params"]["config"]["max_epochs"] = args_cli.max_iterations
+    if args_cli.save_frequency is not None:
+        agent_cfg["params"]["config"]["save_frequency"] = args_cli.save_frequency
     agent_cfg["params"]["config"]["device"] = device
     agent_cfg["params"]["config"]["device_name"] = device
 

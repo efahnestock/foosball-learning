@@ -34,12 +34,24 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="Play a trained foosball PPO checkpoint")
 parser.add_argument("--num_envs", type=int, default=1, help="Parallel envs")
-parser.add_argument("--checkpoint", type=str, required=True, help="Path to .pth checkpoint")
+parser.add_argument(
+    "--checkpoint",
+    type=str,
+    required=True,
+    help="Path to .pth checkpoint",
+)
 parser.add_argument("--seed", type=int, default=42, help="RNG seed")
 parser.add_argument(
     "--no_real_time",
     action="store_true",
     help="Don't pace stepping to wall-clock; run as fast as possible. Implied by --video.",
+)
+parser.add_argument(
+    "--stochastic",
+    action="store_true",
+    help="Sample actions from the policy distribution instead of using the "
+         "deterministic mean. Useful when the deterministic policy degenerates "
+         "but the training rollouts (which were stochastic) actually scored.",
 )
 parser.add_argument(
     "--video",
@@ -57,6 +69,29 @@ parser.add_argument(
     type=str,
     default=None,
     help="Override directory for the MP4. Defaults to logs/rl_games/foos_direct/<ts>/videos/play.",
+)
+parser.add_argument(
+    "--video_warmup",
+    type=int,
+    default=60,
+    help="Steps to skip before video recording starts (default 60 = 1 s @ 60 Hz). "
+         "Avoids the dark/blurry initial frames.",
+)
+parser.add_argument(
+    "--spawn_x_near", type=float, default=None,
+    help="Override ball spawn x_near (for evaluating at harder distributions).",
+)
+parser.add_argument(
+    "--spawn_x_far", type=float, default=None,
+    help="Override ball spawn x_far.",
+)
+parser.add_argument(
+    "--spawn_vx", type=float, default=None,
+    help="Override ball spawn initial vx toward goal.",
+)
+parser.add_argument(
+    "--no_curriculum", action="store_true",
+    help="Force curriculum to its target distribution (progress=1) for evaluation.",
 )
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -95,6 +130,23 @@ def main() -> None:
     env_cfg.scene.num_envs = args_cli.num_envs
     env_cfg.sim.device = device
     env_cfg.seed = args_cli.seed
+    # Always print termination events when replaying — useful for confirming
+    # whether goals are entering the mouth or just back-wall collisions.
+    env_cfg.log_terminations = True
+    if args_cli.spawn_x_near is not None:
+        env_cfg.ball_spawn_x_near = args_cli.spawn_x_near
+    if args_cli.spawn_x_far is not None:
+        env_cfg.ball_spawn_x_far = args_cli.spawn_x_far
+    if args_cli.spawn_vx is not None:
+        env_cfg.ball_spawn_vx_toward_goal = args_cli.spawn_vx
+    if args_cli.no_curriculum:
+        # Override bootstrap range to the curriculum target so the spawn
+        # is at peak difficulty regardless of common_step_counter.
+        env_cfg.ball_spawn_x_near = env_cfg.curriculum_target_x_near
+        env_cfg.ball_spawn_x_far = env_cfg.curriculum_target_x_far
+        env_cfg.ball_spawn_vx_toward_goal = env_cfg.curriculum_target_vx
+        env_cfg.curriculum_decay_steps = 1  # progress=1 immediately
+
 
     agent_cfg = _load_agent_cfg()
     agent_cfg["params"]["config"]["device"] = device
@@ -118,10 +170,11 @@ def main() -> None:
             )
         os.makedirs(video_folder, exist_ok=True)
         print(f"[INFO] recording video to {os.path.abspath(video_folder)}")
+        warmup = args_cli.video_warmup
         env = gym.wrappers.RecordVideo(
             env,
             video_folder=video_folder,
-            step_trigger=lambda step: step == 0,
+            step_trigger=lambda step: step == warmup,
             video_length=args_cli.video_length,
             disable_logger=True,
         )
@@ -163,7 +216,10 @@ def main() -> None:
         t0 = time.time()
         with torch.inference_mode():
             obs = agent.obs_to_torch(obs)
-            actions = agent.get_action(obs, is_deterministic=agent.is_deterministic)
+            actions = agent.get_action(
+                obs,
+                is_deterministic=False if args_cli.stochastic else agent.is_deterministic,
+            )
             obs, _, dones, _ = env.step(actions)
             if agent.is_rnn and agent.states is not None and len(dones) > 0:
                 for s in agent.states:
@@ -171,7 +227,7 @@ def main() -> None:
 
         if args_cli.video:
             timestep += 1
-            if timestep >= args_cli.video_length:
+            if timestep >= args_cli.video_warmup + args_cli.video_length:
                 print(f"[INFO] video_length reached ({timestep} steps); exiting.")
                 break
 

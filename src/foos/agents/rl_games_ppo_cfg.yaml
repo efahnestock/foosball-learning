@@ -60,10 +60,9 @@ params:
     save_best_after: 50
     save_frequency: 100
     grad_norm: 1.0
-    entropy_coef: 0.02       # raised from 0.005 to push more exploration —
-                             # with sparse goal reward and a "do nothing" local
-                             # optimum, the policy needs more pressure to keep
-                             # trying random actions long enough to find goals
+    entropy_coef: 0.0001     # very low — sigma kept blowing up in earlier
+                             # runs and policy converged to random noise.
+                             # Use --sigma cli to set initial exploration.
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 32

@@ -10,6 +10,11 @@ from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.envs.common import ViewerCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
+from isaaclab.sim.schemas import (
+    ConvexDecompositionPropertiesCfg,
+    SDFMeshPropertiesCfg,
+    define_mesh_collision_properties,
+)
 from isaaclab.utils import configclass
 
 from foos.assets_cfg.ball import BALL_CFG
@@ -52,8 +57,9 @@ class FoosEnvCfg(DirectRLEnvCfg):
     episode_length_s = 30.0
 
     # 16 joints = 8 prismatic (slide) + 8 revolute (spin), one pair per rod.
+    # Single policy controls all 16.
     action_space = 16
-    # 16 q + 16 qdot + 3 ball pos + 3 ball lin_vel = 38
+    # 16 q + 16 qdot + 3 ball pos + 3 ball lin_vel = 38.
     observation_space = 38
     state_space = 0
 
@@ -78,75 +84,126 @@ class FoosEnvCfg(DirectRLEnvCfg):
     # A goal counts only when the ball is past the goalie X-line *and*
     # inside the narrow goal mouth in Y. Anything past X but outside the
     # mouth (e.g. ball flying off the side of the table) is OOB, not a goal.
-    ball_x_limit: float = 0.7              # past goalie line
-    ball_y_limit: float = 0.42             # off-side bound
+    # Playing field is 1.2 m × 0.68 m → half-extents 0.6 × 0.34. Back walls
+    # at x = ±0.605 (0.005 past field edge); ball_x_limit slightly past that.
+    ball_x_limit: float = 0.62             # past goalie line / through back wall
+    ball_y_limit: float = 0.4              # off-side bound (field y-half = 0.34)
     ball_z_min: float = 0.5                # fell-through bound
-    goal_mouth_half_width: float = 0.10    # half-width of the goal opening (m)
+    # 0.22 m wide × 0.08 m tall goal opening. With field z=0.762 and wall
+    # top z=0.912, opening spans z=0.762..0.842 and the cap spans z=0.842..0.912
+    # (0.07 m cap). 0.842 is also where the visual-mesh inner-rim plateau
+    # sits, so the cap visually aligns with the rim.
+    goal_mouth_half_width: float = 0.11    # half-width of the goal opening (m)
+    goal_height: float = 0.08              # vertical span of the goal opening (m)
+    # Z range the ball must be in for a goal to count. Without this check,
+    # a ball that spawns above the table and flies *past* the goalie x-line
+    # registers as a goal mid-air without ever rolling on the surface.
+    # Field surface z=0.762, ball-at-rest center ≈ 0.779. Wall top z=0.912,
+    # goal-opening top z=0.842. Range covers "ball anywhere inside the
+    # playing-field cavity".
+    goal_z_min: float = 0.74
+    goal_z_max: float = 0.92
 
-    # Reward weights for the "score any goal, fast, smoothly" objective.
-    # Directional shaping only (|ball.vx|) — generic ball speed produced
-    # rod-spinners that gamed the dense signal. Action-delta penalty is the
-    # real lever for non-twitchy motion; magnitude cost just keeps rods off
-    # the joint stops. OOB is set on the order of the goal bonus so kicking
-    # the ball off the side hurts as much as a goal helps.
-    rew_scale_ball_speed: float = 0.0          # off — replaced by directed below
-    rew_scale_ball_x_speed: float = 0.0        # off — replaced by directed below
-    rew_scale_goal_proximity: float = 0.0      # off — proximity-only is a trap:
-                                               # the policy parked the ball near a
-                                               # mouth and milked the bonus instead
-                                               # of scoring (zero actual goals)
-    # x-velocity *toward* the nearest goal mouth, clipped at zero.
-    # Positive only when the ball is actively being driven into a goal —
-    # parking earns nothing, motion away earns nothing. This was the missing
-    # piece: previous shapings either rewarded any motion (rod-spinners) or
-    # static proximity (ball-parkers).
-    rew_scale_v_toward_goal: float = 0.1
-    rew_scale_action: float = 0.0              # off during goal-discovery phase.
-                                               # Action-cost penalty makes random
-                                               # exploration look bad even when the
-                                               # ball never moves; with this off,
-                                               # only terminal goal/OOB & v_toward
-                                               # shape the policy. Re-enable once
-                                               # the agent reliably scores.
-    rew_scale_action_delta: float = 0.0        # off during goal-discovery phase
-                                               # (LPF in _pre_physics_step still
-                                               # smooths the actual joint targets)
-    rew_scale_step: float = 0.0                # no time pressure: with sparse
-                                               # goals, step penalty pushes the
-                                               # policy to "idle and time out
-                                               # quietly" since random kicks
-                                               # don't reliably score
-    rew_scale_goal: float = 100.0              # huge payoff so any non-zero
-                                               # scoring rate beats idle. Even
-                                               # 1% success * 100 = +1, vs idle's
-                                               # ~-9 (action cost only)
-    rew_scale_oob: float = 0.0                 # zero penalty for missed kicks.
-                                               # The policy needs to ATTEMPT;
-                                               # even -3 made attempts net-negative
-                                               # vs idle. Episodes still terminate
-                                               # on OOB, just with no extra cost.
+    # Reward weights for the "score any goal" objective. A single policy
+    # controls both teams, so scoring in either net counts (`_goal_any`).
+    # v_toward_goal shaping is signed by the ball's own x — positive when
+    # the ball moves toward whichever net is closer (potential-based
+    # telescope: episode sum = |x_final| - |x_initial|).
+    rew_scale_ball_speed: float = 0.0          # off — directed shaping below
+    rew_scale_ball_x_speed: float = 0.0        # off
+    rew_scale_goal_proximity: float = 0.0      # off
+    rew_scale_v_toward_goal: float = 0.5       # per-step (vx * sign(bx)).
+    rew_scale_action: float = 0.0              # off
+    rew_scale_action_delta: float = 0.0        # off until policy reliably
+                                               # scores; add later for smoothness.
+    rew_scale_step: float = -0.01              # mild time pressure: idle
+                                               # over 1800 steps costs -18,
+                                               # one goal +100 dominates.
+    rew_scale_goal: float = 100.0              # big terminal bonus per goal
+    rew_scale_oob: float = -10.0               # OOB ends episode without a
+                                               # goal; penalty is < the goal
+                                               # bonus so risky attempts that
+                                               # occasionally miss are still
+                                               # net-positive.
 
     # Action low-pass filter (per-step blend factor). Action targets are
     # smoothed via a first-order IIR before being sent to PhysX:
     #   target := alpha * new + (1 - alpha) * prev_target
-    # alpha=0.35 at 60 Hz => ~50 ms time constant. 0.2 was too laggy for
-    # kicking — the action target couldn't snap fast enough to form a kick
-    # before the ball moved past, and the policy converged on idle.
-    action_smoothing_alpha: float = 0.35
+    # alpha=1.0 disables the filter (pure pass-through). Was 0.35 (50 ms
+    # time constant) for human-like reaction times, but during training
+    # this muted rod swings too much — agent couldn't actually kick the
+    # ball within a few steps. Re-enable as a post-training smoothness
+    # constraint if needed.
+    action_smoothing_alpha: float = 1.0
+
+    # Diagnostic: print ball position at every termination event. Off by
+    # default — flip on for debugging "are goals real or back-wall hits".
+    log_terminations: bool = False
+
+    # Override the table's mesh collision approximation post-spawn. The URDF
+    # importer's `collider_type="convex_decomposition"` (set in
+    # foosball_table.py) ships only with default decomposition params, which
+    # in our case fails to capture the goal-mouth carveout — the ball gets
+    # ejected from the closed convex hulls instead of entering the goal.
+    # Options:
+    #   "default":              keep whatever the URDF importer produced
+    #   "convex_decomposition": apply ConvexDecompositionPropertiesCfg with
+    #                           aggressive params (more hulls, finer voxels)
+    #   "sdf":                  use signed-distance-field mesh collision —
+    #                           exact but ~2-3x slower physics
+    # Note: both fail empirically because the OBJ mesh is an open shell.
+    # Use `use_primitive_table_collision=True` instead.
+    table_collision_approx: str = "default"
+
+    # Disable the URDF table's mesh collision and replace it with hand-built
+    # primitive walls + floor. The OBJ mesh isn't watertight — convex_decomp
+    # closes the playing-field cavity and SDF can't compute a proper inside
+    # vs outside, so the ball gets ejected violently from the table interior.
+    # Primitives sidestep this entirely: floor + 4 side walls + 2 back-wall
+    # pairs (each pair flanking a goal-mouth gap of width 2*goal_mouth_half_width).
+    # Defaults to True now that the URDF's table <collision> block has been
+    # stripped — without primitives, the table has no collision at all.
+    use_primitive_table_collision: bool = True
+
+    # When True, render the primitive cuboid colliders as bright translucent
+    # green so the collision shape is visually inspectable. Only meant for
+    # debugging the collision geometry — leave False for training.
+    visualize_primitive_collision: bool = False
 
     # Curriculum: at reset, sample ball X position from
     #   sign * Uniform(spawn_x_near, spawn_x_far)
-    # with sign +/-1 chosen uniformly. With near=0.65, far=0.69, the ball
-    # spawns *past* the goalie (at x=0.525) and just shy of the goal mouth
-    # (x=0.70). Combined with ball_spawn_vx_toward_goal below, every episode
-    # starts with the ball moving into a goal — almost-automatic scoring
-    # gives the policy a strong reward signal to bootstrap from. Once
-    # scoring is reliable, dial these toward 0 to expand the distribution.
+    # with sign +/-1 chosen uniformly. Stage-1 bootstrap: spawn the ball
+    # past the goalie (x=±0.525) with an initial velocity into the goal,
+    # so a do-nothing policy already scores most episodes — gives the
+    # value network a real signal that "kicking the ball outward = +100".
+    # Once scoring is reliable, lower spawn_x_near and ball_spawn_vx
+    # toward zero to widen the start distribution.
+    # Curriculum-decayed spawn. Effective spawn at training step t blends
+    # between the easy bootstrap (ball past the goalie at x=±0.55..0.59,
+    # vx=0.5) and the hard target (ball at the center, no push) over
+    # `curriculum_decay_steps` *frames* of training. _reset_idx samples
+    # from the interpolated range every reset.
+    # Ball spawns stationary at a random x in ±[near, far] with random sign,
+    # near zero velocity. With prismatic working, the agent can chase from
+    # any starting position. Random sign means trainee sees both attacking
+    # and defending starts.
     ball_spawn_x_near: float = 0.0
-    ball_spawn_x_far: float = 0.35
-    # Initial X velocity at spawn, signed toward the closer goal. Now zero —
-    # the policy has to drive the ball forward unaided. Real play conditions.
+    ball_spawn_x_far: float = 0.3
     ball_spawn_vx_toward_goal: float = 0.0
+    ball_spawn_random_vmax: float = 0.0
+    # Target distribution centered around the goalie line. Pinned here
+    # (not at x=0) because the policy collapsed past progress=0.5 in
+    # earlier runs — center-spawn requires multi-rod coordination that
+    # the value net hasn't bootstrapped. Once the agent reliably scores
+    # from this range, lower the target gradually.
+    curriculum_target_x_near: float = 0.275
+    curriculum_target_x_far: float = 0.55
+    curriculum_target_vx: float = 0.25
+    # Per-env env-steps over which the curriculum interpolates from
+    # bootstrap to target. self.common_step_counter ticks once per
+    # env-step (not per env-frame), so 48000 ≈ 1500 PPO epochs at
+    # horizon=32. Set huge to effectively disable (always bootstrap).
+    curriculum_decay_steps: int = 10**12
 
 
 class FoosEnv(DirectRLEnv):
@@ -173,29 +230,68 @@ class FoosEnv(DirectRLEnv):
         )
 
         self._action_targets = self._joint_default.clone()
-        # `_last_actions` tracks the action commanded *this* step (after clip);
-        # `_prev_actions` tracks the previous step, used to compute the
-        # smoothness delta penalty.
+        # _last_actions tracks the action commanded *this* step (after clip);
+        # _prev_actions tracks the previous step, used for the smoothness
+        # delta penalty.
         self._last_actions = torch.zeros_like(self._action_targets)
         self._prev_actions = torch.zeros_like(self._action_targets)
 
         # Per-step termination flags, set in _get_dones and consumed by
         # _get_rewards in the same step (DirectRLEnv runs dones before rewards).
-        # We still track per-side goals separately (handy for future self-play
-        # logging) but the reward only sees `_goal_any`.
+        # Per-team goal flags let us log where the ball ended up scored, and
+        # match convention: ball past -X = team 1 scored (in team 2's net),
+        # ball past +X = team 2 scored (in team 1's net).
         self._goal_team1 = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._goal_team2 = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._goal_any = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._oob = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # Cumulative goal counter for tensorboard logging. Per-team breakdown
-        # is kept too so we can spot if the policy only scores in one direction.
+        # lets you spot if the policy only scores in one direction.
         self._score_team1 = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._score_team2 = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
     def _setup_scene(self):
         self.table = Articulation(self.cfg.robot)
         self.ball = RigidObject(self.cfg.ball)
+
+        # Override the table's mesh collision approximation if requested.
+        # The URDF importer cooks one approximation at import time, but we
+        # can re-apply with different params or switch to SDF after spawn.
+        approx = self.cfg.table_collision_approx
+        if approx != "default":
+            if approx == "convex_decomposition":
+                mesh_cfg = ConvexDecompositionPropertiesCfg(
+                    max_convex_hulls=512,
+                    hull_vertex_limit=128,
+                    voxel_resolution=2_000_000,
+                    error_percentage=2.0,
+                    shrink_wrap=True,
+                )
+            elif approx == "sdf":
+                mesh_cfg = SDFMeshPropertiesCfg(
+                    sdf_resolution=512,
+                )
+            else:
+                raise ValueError(
+                    f"Unknown table_collision_approx={approx!r}; expected "
+                    "one of 'default', 'convex_decomposition', 'sdf'."
+                )
+            # The decorator @apply_nested on define_mesh_collision_properties
+            # recurses into all child mesh prims under the given path, so
+            # passing the table's source-env prim path covers every collision
+            # mesh in the URDF (table body + intermediate empty links).
+            print(
+                f">>> [foos_env] applying table_collision_approx={approx!r} "
+                "to /World/envs/env_0/Table",
+                flush=True,
+            )
+            define_mesh_collision_properties(
+                prim_path="/World/envs/env_0/Table", cfg=mesh_cfg
+            )
+
+        if self.cfg.use_primitive_table_collision:
+            self._build_primitive_table_collision()
 
         # Attach the rod-figure USD meshes under each rod link's source-env
         # prim path. clone_environments below will replicate them across envs.
@@ -220,10 +316,114 @@ class FoosEnv(DirectRLEnv):
         self.scene.articulations["table"] = self.table
         self.scene.rigid_objects["ball"] = self.ball
 
+    def _build_primitive_table_collision(self) -> None:
+        """Spawn 9 primitive cuboid colliders for the playing-field cavity.
+        The visible OBJ mesh stays for rendering; only the *physics*
+        collision changes. Coordinates in env-local frame (env origin at
+        world (0,0,0)).
+
+        Real foosball-table geometry (anchored to visible mesh):
+            * playing field         1.2 m × 0.68 m  (half-extents 0.6 × 0.34)
+            * field surface z       0.732
+            * goal-opening top z    0.842 (matches visible mesh)
+            * wall top z            0.912 (mesh top after 0.482 m lift)
+            * goal opening          0.22 m wide × 0.11 m tall
+            * wall total            0.18 m (= 0.912 − 0.732)
+
+        Layout (9 boxes):
+            1 floor + 2 long side walls + 4 back-wall segments flanking each
+            goal mouth + 2 goal roofs capping the gap above each opening.
+
+        Note: tried bundling cuboids into one composite USD with cooked
+        convex_decomposition. The composite collision didn't activate when
+        spawned via UsdFileCfg (ball fell through), and at the same hull
+        count there was no FPS win. Per-prim cuboids stay.
+        """
+        import isaaclab.sim as sim_utils
+
+        # Spawn under the env root, NOT under Table — the Table prim has a
+        # +0.482 m world-z translation (its init_state.pos), and children
+        # inherit that. Spawning here keeps coordinates in env-local frame.
+        base = "/World/envs/env_0/primitive_collision"
+
+        FIELD_X = 0.6
+        FIELD_Y = 0.34
+        # Real-table geometry (per user spec): feet on ground (z=0), field
+        # surface 0.762 m above, wall top 0.15 m above field (z=0.912 —
+        # matches the visual-mesh top). The visual mesh's playing-field
+        # plateau is incorrectly at z=0.842 (0.08 m too high); collision is
+        # at the *physical* z=0.762 and ball will visually sit below the
+        # mesh plateau until the OBJ gets re-authored.
+        FIELD_Z = 0.762
+        # Wall height splits in two: side walls (y=±FIELD_Y) MUST stay below
+        # the rods at z=0.842 (rod radius 0.008 → bottom 0.834), otherwise
+        # the rod's cylinder collides with the wall and prismatic joints get
+        # frozen. Back walls (x=±FIELD_X) are perpendicular to the rod axis
+        # and rods don't reach them, so they can be full-height.
+        SIDE_WALL_TOP = 0.825      # 9 mm below rod bottom
+        WALL_HALF_H = 0.075        # full-height (back walls + caps)
+        GOAL_HALF_W = self.cfg.goal_mouth_half_width
+        GOAL_H = self.cfg.goal_height
+        WALL_T = 0.01
+
+        material = sim_utils.RigidBodyMaterialCfg(
+            static_friction=0.3, dynamic_friction=0.25, restitution=0.4
+        )
+        coll = sim_utils.CollisionPropertiesCfg()
+        if self.cfg.visualize_primitive_collision:
+            visual = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.05, 0.95, 0.2))
+        else:
+            visual = sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(0.0, 1.0, 0.0), opacity=0.0
+            )
+
+        def cuboid(name: str, size: tuple[float, float, float], pos: tuple[float, float, float]):
+            cfg = sim_utils.CuboidCfg(
+                size=size,
+                collision_props=coll,
+                physics_material=material,
+                visual_material=visual,
+            )
+            cfg.func(f"{base}/{name}", cfg, translation=pos)
+
+        cuboid("floor",
+               size=(2 * FIELD_X, 2 * FIELD_Y, WALL_T),
+               pos=(0.0, 0.0, FIELD_Z - WALL_T / 2))
+        side_h = SIDE_WALL_TOP - FIELD_Z
+        for sign in (+1, -1):
+            cuboid(f"side_y_{'pos' if sign > 0 else 'neg'}",
+                   size=(2 * FIELD_X, WALL_T, side_h),
+                   pos=(0.0, sign * (FIELD_Y + WALL_T / 2), FIELD_Z + side_h / 2))
+        for sign_y, suffix in ((+1, "y_pos"), (-1, "y_neg")):
+            half_y_extent = (FIELD_Y - GOAL_HALF_W) / 2
+            y_center = sign_y * (GOAL_HALF_W + half_y_extent)
+            cuboid(f"back_x_pos_{suffix}",
+                   size=(WALL_T, 2 * half_y_extent, 2 * WALL_HALF_H),
+                   pos=(FIELD_X + WALL_T / 2, y_center, FIELD_Z + WALL_HALF_H))
+            cuboid(f"back_x_neg_{suffix}",
+                   size=(WALL_T, 2 * half_y_extent, 2 * WALL_HALF_H),
+                   pos=(-(FIELD_X + WALL_T / 2), y_center, FIELD_Z + WALL_HALF_H))
+
+        # Goal-mouth roofs: cap the gap above each goal opening so the ball
+        # can't fly out the top. Spans the goal width in y; sits between the
+        # top of the goal opening (FIELD_Z + GOAL_H) and the wall top
+        # (FIELD_Z + 2 * WALL_HALF_H).
+        roof_h = 2 * WALL_HALF_H - GOAL_H
+        roof_z_center = FIELD_Z + GOAL_H + roof_h / 2
+        for sign_x, name in ((+1, "roof_x_pos"), (-1, "roof_x_neg")):
+            cuboid(name,
+                   size=(WALL_T, 2 * GOAL_HALF_W, roof_h),
+                   pos=(sign_x * (FIELD_X + WALL_T / 2), 0.0, roof_z_center))
+
+        print(
+            f">>> [foos_env] 9 primitive cuboid colliders spawned under {base}",
+            flush=True,
+        )
+
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        # actions in [-1, 1]; offset from neutral pose by per-joint scale.
-        # Then low-pass filter the target so PD doesn't snap from one pose to
-        # the next on every step.
+        # Actions in [-1, 1]; offset from neutral pose by per-joint scale.
+        # Then low-pass filter the target so PD doesn't snap from one pose
+        # to the next on every step.
         clipped = actions.clamp(-1.0, 1.0)
         target_raw = self._joint_default + clipped * self._joint_scale
         alpha = self.cfg.action_smoothing_alpha
@@ -254,17 +454,57 @@ class FoosEnv(DirectRLEnv):
         # back corners) is OOB, not a goal — without this Y check, training
         # rewards "ball crossed the goal line anywhere on the table edge".
         in_mouth = by.abs() < self.cfg.goal_mouth_half_width
+        on_field_z = (bz > self.cfg.goal_z_min) & (bz < self.cfg.goal_z_max)
         past_x_neg = bx < -self.cfg.ball_x_limit
         past_x_pos = bx > self.cfg.ball_x_limit
-        self._goal_team1 = past_x_neg & in_mouth   # ball into team 2's net
-        self._goal_team2 = past_x_pos & in_mouth   # ball into team 1's net
+        self._goal_team1 = past_x_neg & in_mouth & on_field_z   # team 2's net
+        self._goal_team2 = past_x_pos & in_mouth & on_field_z   # team 1's net
         self._goal_any = self._goal_team1 | self._goal_team2
-        off_mouth_x = (past_x_neg | past_x_pos) & ~in_mouth
+        off_mouth_x = (past_x_neg | past_x_pos) & ~(in_mouth & on_field_z)
         self._oob = (
             (by.abs() > self.cfg.ball_y_limit)
             | (bz < self.cfg.ball_z_min)
             | off_mouth_x
         )
+
+        # Diagnostic prints: every 60 steps emit a heartbeat with ball state
+        # plus per-event prints for any termination this step.
+        if not hasattr(self, "_diag_step"):
+            self._diag_step = 0
+        self._diag_step += 1
+        # Dense heartbeat for the first 50 steps after each reset (to capture
+        # what happens to a freshly-spawned ball), then sparse afterward.
+        # _diag_step is monotonic across resets so it doesn't reset itself; we
+        # detect resets via the env's episode_length_buf == 0.
+        ep_len = self.episode_length_buf[0].item()
+        if (ep_len < 50 and ep_len % 2 == 0) or self._diag_step % 60 == 1:
+            print(
+                f"[HB step={self._diag_step} ep_len={ep_len}] "
+                f"bx={bx[0].item():+.3f} by={by[0].item():+.3f} bz={bz[0].item():+.3f}  "
+                f"goal={int(self._goal_any[0])}  oob={int(self._oob[0])}  "
+                f"in_mouth={int(in_mouth[0])} on_field_z={int(on_field_z[0])} "
+                f"past_x={int(past_x_neg[0]) - int(past_x_pos[0])}",
+                flush=True,
+            )
+        if getattr(self.cfg, "log_terminations", False):
+            for env_id in range(self.num_envs):
+                if self._goal_any[env_id]:
+                    print(
+                        f"[GOAL] env={env_id} bx={bx[env_id].item():+.3f} "
+                        f"by={by[env_id].item():+.3f} bz={bz[env_id].item():+.3f}",
+                        flush=True,
+                    )
+                elif self._oob[env_id]:
+                    why = (
+                        "off_mouth_x" if off_mouth_x[env_id] else
+                        "y_oob" if by[env_id].abs() > self.cfg.ball_y_limit else
+                        "z_below"
+                    )
+                    print(
+                        f"[OOB:{why}] env={env_id} bx={bx[env_id].item():+.3f} "
+                        f"by={by[env_id].item():+.3f} bz={bz[env_id].item():+.3f}",
+                        flush=True,
+                    )
 
         terminated = self._goal_any | self._oob
 
@@ -280,18 +520,15 @@ class FoosEnv(DirectRLEnv):
         ball_lin_vel = self.ball.data.root_lin_vel_w
         ball_speed = ball_lin_vel[:, :2].norm(dim=-1)
         ball_x_speed = ball_lin_vel[:, 0].abs()
-        bx = ball_pos_local[:, 0]
 
-        # Signed velocity toward the nearest goal mouth. Positive when ball
-        # heads outward (toward closer net), negative when it heads inward.
-        # IMPORTANT: do NOT clamp at zero — without the clamp this is a
-        # proper potential-based shaping (sum over episode telescopes to
-        # |x_final| - |x_initial|), so oscillating the ball nets zero and
-        # the policy can't farm reward by pushing-then-pulling. With the
-        # clamp, the agent can repeatedly push forward, take negative motion
-        # for free, and accumulate large fake rewards without ever scoring.
-        sign_to_nearest = torch.sign(bx)  # closer goal is on the same side
+        # Single policy controls all 16 rods. Score in either net counts;
+        # v_toward_goal shaping is signed by the ball's own x position so
+        # positive velocity is always "toward the closer net" (potential-
+        # based: episode-sum telescopes to |x_final| - |x_initial|, so
+        # oscillating nets zero).
+        sign_to_nearest = torch.sign(ball_pos_local[:, 0])
         v_toward = ball_lin_vel[:, 0] * sign_to_nearest
+        goal_reward = self._goal_any.float()
 
         action_cost = self._last_actions.square().sum(dim=-1)
         action_delta = (self._last_actions - self._prev_actions).square().sum(dim=-1)
@@ -306,11 +543,10 @@ class FoosEnv(DirectRLEnv):
             + cfg.rew_scale_action * action_cost
             + cfg.rew_scale_action_delta * action_delta
             + step_penalty
-            + cfg.rew_scale_goal * self._goal_any.float()
+            + cfg.rew_scale_goal * goal_reward
             + cfg.rew_scale_oob * self._oob.float()
         )
 
-        # Surface per-component means in extras for tensorboard.
         self.extras["log"] = {
             "rew/ball_speed": (cfg.rew_scale_ball_speed * ball_speed).mean(),
             "rew/ball_x_speed": (cfg.rew_scale_ball_x_speed * ball_x_speed).mean(),
@@ -318,11 +554,18 @@ class FoosEnv(DirectRLEnv):
             "rew/action_cost": (cfg.rew_scale_action * action_cost).mean(),
             "rew/action_delta": (cfg.rew_scale_action_delta * action_delta).mean(),
             "rew/step": step_penalty.mean(),
-            "rew/goal_any": (cfg.rew_scale_goal * self._goal_any.float()).mean(),
+            "rew/goal": (cfg.rew_scale_goal * goal_reward).mean(),
             "rew/oob": (cfg.rew_scale_oob * self._oob.float()).mean(),
             "score/goals_total": (self._score_team1 + self._score_team2).float().mean(),
             "score/team1_total": self._score_team1.float().mean(),
             "score/team2_total": self._score_team2.float().mean(),
+            "curriculum/progress": torch.tensor(
+                min(
+                    self.common_step_counter / max(1, cfg.curriculum_decay_steps),
+                    1.0,
+                ),
+                device=self.device,
+            ),
         }
         return rew
 
@@ -339,13 +582,31 @@ class FoosEnv(DirectRLEnv):
 
         # Curriculum spawn: ball positioned past the goalie + initial velocity
         # toward the same goal. Y jitter kept small so the ball lands on the
-        # playing surface rather than on a side wall.
+        # playing surface rather than on a side wall. Interpolate between the
+        # easy bootstrap (`ball_spawn_*`) and the hard target
+        # (`curriculum_target_*`) by the fraction of `curriculum_decay_steps`
+        # consumed so far. self.common_step_counter is rl_games's frame
+        # counter (ticks once per env-step across all envs).
         n = len(env_ids)
-        near = self.cfg.ball_spawn_x_near
-        far = self.cfg.ball_spawn_x_far
+        progress = min(
+            self.common_step_counter / max(1, self.cfg.curriculum_decay_steps), 1.0
+        )
+        near = (
+            (1.0 - progress) * self.cfg.ball_spawn_x_near
+            + progress * self.cfg.curriculum_target_x_near
+        )
+        far = (
+            (1.0 - progress) * self.cfg.ball_spawn_x_far
+            + progress * self.cfg.curriculum_target_x_far
+        )
+        vx = (
+            (1.0 - progress) * self.cfg.ball_spawn_vx_toward_goal
+            + progress * self.cfg.curriculum_target_vx
+        )
         if near == 0.0 and far == 0.0:
             x_offset = torch.zeros(n, 1, device=self.device)
-            sign = torch.zeros(n, 1, device=self.device)
+            # Always launch toward +X goal when spawn is fixed at center.
+            sign = torch.ones(n, 1, device=self.device)
         else:
             mag = torch.empty(n, 1, device=self.device).uniform_(near, far)
             sign = torch.where(
@@ -361,7 +622,16 @@ class FoosEnv(DirectRLEnv):
         ball_root_state[:, 1:2] += y_offset
         ball_root_state[:, 7:13] = 0.0  # zero linear + angular velocity
         # Pre-launch ball toward closer goal (sign already encodes direction).
-        ball_root_state[:, 7:8] = sign * self.cfg.ball_spawn_vx_toward_goal
+        ball_root_state[:, 7:8] = sign * vx
+        # Optional extra random kick on top of the directed push.
+        vmax = self.cfg.ball_spawn_random_vmax
+        if vmax > 0:
+            ball_root_state[:, 7:8] += torch.empty(
+                n, 1, device=self.device
+            ).uniform_(-vmax, vmax)
+            ball_root_state[:, 8:9] = torch.empty(
+                n, 1, device=self.device
+            ).uniform_(-vmax, vmax)
         self.ball.write_root_pose_to_sim(ball_root_state[:, :7], env_ids=env_ids)
         self.ball.write_root_velocity_to_sim(ball_root_state[:, 7:], env_ids=env_ids)
 

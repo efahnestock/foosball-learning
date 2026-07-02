@@ -20,11 +20,13 @@ BALL_CFG = RigidObjectCfg(
             restitution=0.6,       # TUNABLE
         ),
         visual_material=sim_utils.PreviewSurfaceCfg(
-            diffuse_color=(1.0, 0.95, 0.2),
+            # Bright orange — stands out against the wood-toned table and
+            # both rod-team colors.
+            diffuse_color=(1.0, 0.4, 0.0),
         ),
     ),
-    # Drop above the playing surface. After the table is lifted by 0.482m,
-    # the playing field sits around z ~= 0.84; spawning at z=1.0 drops the
-    # ball ~16 cm onto the field.
-    init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 1.0)),
+    # Spawn the ball INSIDE the playing-field cavity. Field surface is at
+    # z=0.762, ball-at-rest center ≈ 0.779. Spawn ~1 cm above surface so it
+    # drops cleanly without phasing through the cuboid floor.
+    init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.79)),
 )
