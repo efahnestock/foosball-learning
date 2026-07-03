@@ -20,6 +20,10 @@ from isaaclab.utils import configclass
 from foos.assets_cfg.ball import BALL_CFG
 from foos.assets_cfg.foosball_table import FOOSBALL_TABLE_CFG
 
+# NOTE: `OpponentActor` (self-play) is imported lazily inside set_opponent()
+# so the env — and the whole `foos` package — imports without the self-play
+# module present. Only needed when cfg.self_play_mode is enabled.
+
 # Mapping from rod link name to the pre-converted player-figure USD mesh.
 # The Isaac Sim 5.1 URDF importer crashes on the rod OBJ files in jointed
 # contexts (see CLAUDE.md), so the URDF carries cylinder primitives for
@@ -57,11 +61,25 @@ class FoosEnvCfg(DirectRLEnvCfg):
     episode_length_s = 30.0
 
     # 16 joints = 8 prismatic (slide) + 8 revolute (spin), one pair per rod.
-    # Single policy controls all 16.
+    # In single-agent mode (self_play_mode=False, the default) one policy
+    # controls all 16. In self-play mode the trainee controls team 1's 8
+    # joints and an embedded opponent controls team 2's 8 — set
+    # action_space=8 externally when flipping self_play_mode on.
     action_space = 16
     # 16 q + 16 qdot + 3 ball pos + 3 ball lin_vel = 38.
     observation_space = 38
     state_space = 0
+
+    # Self-play (EXPERIMENTAL / off by default): when True, action_space
+    # must be set to 8, and cfg.opponent_checkpoint must point at an
+    # rl_games .pth that drives team 2. Reward switches to zero-sum on
+    # goals (team-1-perspective).
+    self_play_mode: bool = False
+    # Path to an rl_games .pth checkpoint to drive team 2. Ignored unless
+    # self_play_mode=True. None = opponent rods stay at their joint defaults.
+    opponent_checkpoint: str | None = None
+    # When True, opponent uses the deterministic mean (mu) of its policy.
+    opponent_deterministic: bool = True
 
     robot: object = FOOSBALL_TABLE_CFG.replace(
         prim_path="/World/envs/env_.*/Table"
@@ -104,26 +122,46 @@ class FoosEnvCfg(DirectRLEnvCfg):
     goal_z_min: float = 0.74
     goal_z_max: float = 0.92
 
-    # Reward weights for the "score any goal" objective. A single policy
-    # controls both teams, so scoring in either net counts (`_goal_any`).
-    # v_toward_goal shaping is signed by the ball's own x — positive when
-    # the ball moves toward whichever net is closer (potential-based
-    # telescope: episode sum = |x_final| - |x_initial|).
+    # Stuck-ball detection. Real foosball dead-balls (ball wedged in a
+    # corner where no rod reaches, or come to rest in a mid-field dead
+    # zone) would otherwise burn the whole 30 s episode with no play. If
+    # the ball's planar (xy) speed stays below `stuck_speed_threshold`
+    # (m/s) for `stuck_time_s` continuous seconds, the point is declared
+    # dead: the episode ends (grouped with truncation, so it's a no-score
+    # reset and the value function bootstraps rather than eating a
+    # spurious terminal penalty). Set `stuck_time_s <= 0` to disable.
+    stuck_speed_threshold: float = 0.05
+    stuck_time_s: float = 3.0
+
+    # Print a per-step ball-state heartbeat line from _get_dones. Very
+    # noisy — meant for physics debugging only. Independent of
+    # `log_terminations` (which prints one line per goal/OOB event).
+    debug_heartbeat: bool = False
+
+    # Reward weights for the self-play scoring objective. Zero-sum on goals:
+    # team 1 scoring = +rew_scale_goal for the trainee, team 2 scoring =
+    # -rew_scale_goal. Trainee attacks toward -X (team 2's net at x=-0.6);
+    # v_toward_goal directly rewards leftward ball velocity.
     rew_scale_ball_speed: float = 0.0          # off — directed shaping below
     rew_scale_ball_x_speed: float = 0.0        # off
     rew_scale_goal_proximity: float = 0.0      # off
-    rew_scale_v_toward_goal: float = 0.5       # per-step (vx * sign(bx)).
+    rew_scale_v_toward_goal: float = 0.5       # +0.5 * (-vx) per step.
+                                               # Potential-based: telescopes
+                                               # to 0.5 * (x_init - x_final),
+                                               # so oscillating ball nets 0.
     rew_scale_action: float = 0.0              # off
     rew_scale_action_delta: float = 0.0        # off until policy reliably
-                                               # scores; add later for smoothness.
+                                               # scores; layer in later for
+                                               # smoothness.
     rew_scale_step: float = -0.01              # mild time pressure: idle
                                                # over 1800 steps costs -18,
                                                # one goal +100 dominates.
-    rew_scale_goal: float = 100.0              # big terminal bonus per goal
-    rew_scale_oob: float = -10.0               # OOB ends episode without a
-                                               # goal; penalty is < the goal
-                                               # bonus so risky attempts that
-                                               # occasionally miss are still
+    rew_scale_goal: float = 100.0              # big terminal bonus, zero-sum
+    rew_scale_oob: float = -10.0               # OOB hurts both teams (episode
+                                               # ends without a goal). Penalty
+                                               # smaller than goal bonus so
+                                               # ball-control attempts that
+                                               # occasionally fail are still
                                                # net-positive.
 
     # Action low-pass filter (per-step blend factor). Action targets are
@@ -215,6 +253,8 @@ class FoosEnv(DirectRLEnv):
         # Build per-joint scale tensor (16,) by dispatching on joint name.
         joint_names = self.table.joint_names
         scales = torch.zeros(len(joint_names), device=self.device)
+        team1_idx: list[int] = []
+        team2_idx: list[int] = []
         for i, name in enumerate(joint_names):
             if name.endswith("_prismatic_joint"):
                 scales[i] = self.cfg.action_scale_prismatic
@@ -222,7 +262,24 @@ class FoosEnv(DirectRLEnv):
                 scales[i] = self.cfg.action_scale_revolute
             else:
                 raise ValueError(f"Unexpected joint name in foosball URDF: {name!r}")
+            if "_team_1_" in name:
+                team1_idx.append(i)
+            elif "_team_2_" in name:
+                team2_idx.append(i)
+            else:
+                raise ValueError(f"Joint name lacks team marker: {name!r}")
+        if len(team1_idx) != 8 or len(team2_idx) != 8:
+            raise ValueError(
+                f"Expected 8 joints per team, got team1={len(team1_idx)}, "
+                f"team2={len(team2_idx)} from joint_names={joint_names!r}"
+            )
         self._joint_scale = scales
+        self._team1_idx = torch.tensor(team1_idx, dtype=torch.long, device=self.device)
+        self._team2_idx = torch.tensor(team2_idx, dtype=torch.long, device=self.device)
+        # Per-team action-scale slices (size 8 each) so trainee action[i]
+        # maps to joint scales[team1_idx[i]].
+        self._joint_scale_team1 = scales[self._team1_idx]
+        self._joint_scale_team2 = scales[self._team2_idx]
 
         # Default joint position (zeros — rods centered, players upright).
         self._joint_default = torch.zeros(
@@ -230,17 +287,22 @@ class FoosEnv(DirectRLEnv):
         )
 
         self._action_targets = self._joint_default.clone()
-        # _last_actions tracks the action commanded *this* step (after clip);
-        # _prev_actions tracks the previous step, used for the smoothness
-        # delta penalty.
+        # Cached 16-wide action history: even though trainee only emits 8
+        # values, we track full-16 for smoothness/diagnostic logging and so
+        # the action_delta penalty (when enabled) sees both teams' commands.
         self._last_actions = torch.zeros_like(self._action_targets)
         self._prev_actions = torch.zeros_like(self._action_targets)
 
+        # Opponent slot. Only used when cfg.self_play_mode=True; in
+        # single-agent mode both teams are controlled by one policy so no
+        # opponent is loaded. Cached obs tensor is fed to the opponent at
+        # the *next* _pre_physics_step.
+        self._opponent_actor: OpponentActor | None = None
+        self._last_observation: torch.Tensor | None = None
+
         # Per-step termination flags, set in _get_dones and consumed by
         # _get_rewards in the same step (DirectRLEnv runs dones before rewards).
-        # Per-team goal flags let us log where the ball ended up scored, and
-        # match convention: ball past -X = team 1 scored (in team 2's net),
-        # ball past +X = team 2 scored (in team 1's net).
+        # Per-side goal flags are also used by the self-play zero-sum reward.
         self._goal_team1 = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._goal_team2 = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._goal_any = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -250,6 +312,39 @@ class FoosEnv(DirectRLEnv):
         # lets you spot if the policy only scores in one direction.
         self._score_team1 = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._score_team2 = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+
+        # Stuck-ball detection: consecutive-step counter of low ball speed,
+        # plus the per-step "stuck this step" flag (grouped into truncated).
+        # `_stuck_steps` converts stuck_time_s into policy steps; the policy
+        # timestep is sim.dt * decimation (== 1/60 s with the defaults).
+        self._stuck_counter = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._stuck = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._stuck_total = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        policy_dt = self.cfg.sim.dt * self.cfg.decimation
+        self._stuck_steps = (
+            int(round(self.cfg.stuck_time_s / policy_dt))
+            if self.cfg.stuck_time_s > 0
+            else 0
+        )
+
+        if self.cfg.self_play_mode and self.cfg.opponent_checkpoint is not None:
+            self.set_opponent(self.cfg.opponent_checkpoint)
+
+    def set_opponent(self, checkpoint_path: str | None) -> None:
+        """Load (or clear) the team-2 opponent policy. Called at env init
+        and again whenever the snapshot rotates (Phase 3)."""
+        if checkpoint_path is None:
+            self._opponent_actor = None
+            return
+        from foos.envs.opponent_actor import OpponentActor
+
+        self._opponent_actor = OpponentActor.from_checkpoint(
+            path=checkpoint_path,
+            obs_dim=self.cfg.observation_space,
+            team1_idx=self._team1_idx,
+            team2_idx=self._team2_idx,
+            device=self.device,
+        )
 
     def _setup_scene(self):
         self.table = Articulation(self.cfg.robot)
@@ -421,15 +516,45 @@ class FoosEnv(DirectRLEnv):
         )
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        # Actions in [-1, 1]; offset from neutral pose by per-joint scale.
-        # Then low-pass filter the target so PD doesn't snap from one pose
-        # to the next on every step.
         clipped = actions.clamp(-1.0, 1.0)
-        target_raw = self._joint_default + clipped * self._joint_scale
+        if not self.cfg.self_play_mode:
+            # Single-agent: one policy controls all 16 joints. Actions
+            # directly map onto the full articulation.
+            target_raw = self._joint_default + clipped * self._joint_scale
+            self._prev_actions = self._last_actions
+            self._last_actions = clipped
+        else:
+            # Self-play: `actions` is trainee's (N, 8) for team 1 only. The
+            # opponent (frozen policy) emits team 2's 8 actions.
+            trainee = clipped
+            if self._opponent_actor is not None:
+                opp_action = self._compute_opponent_action()
+            else:
+                opp_action = torch.zeros(self.num_envs, 8, device=self.device)
+            # Trainee actions go to team-1 joint indices, opponent to team-2
+            # indices. Order within each block already matches because both
+            # teams share the same rod ordering.
+            target_raw = self._joint_default.clone()
+            target_raw[:, self._team1_idx] = trainee * self._joint_scale_team1
+            target_raw[:, self._team2_idx] = opp_action * self._joint_scale_team2
+            # Full-16 action history so smoothness diagnostics see both teams.
+            full_actions = torch.zeros_like(self._action_targets)
+            full_actions[:, self._team1_idx] = trainee
+            full_actions[:, self._team2_idx] = opp_action
+            self._prev_actions = self._last_actions
+            self._last_actions = full_actions
+
         alpha = self.cfg.action_smoothing_alpha
         self._action_targets = alpha * target_raw + (1.0 - alpha) * self._action_targets
-        self._prev_actions = self._last_actions
-        self._last_actions = clipped
+
+    def _compute_opponent_action(self) -> torch.Tensor:
+        """Forward-pass through the frozen opponent using the previous
+        step's observation. Returns (N, 8) clamped to [-1, 1]."""
+        if self._last_observation is None:
+            # First step after init/reset — opponent has no obs yet; hold
+            # rods at default.
+            return torch.zeros(self.num_envs, 8, device=self.device)
+        return self._opponent_actor(self._last_observation)
 
     def _apply_action(self) -> None:
         self.table.set_joint_position_target(self._action_targets)
@@ -442,6 +567,8 @@ class FoosEnv(DirectRLEnv):
         ball_lin_vel = self.ball.data.root_lin_vel_w
 
         obs = torch.cat([joint_pos, joint_vel, ball_pos, ball_lin_vel], dim=-1)
+        # Cache for the opponent forward pass on the *next* _pre_physics_step.
+        self._last_observation = obs
         return {"policy": obs}
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -467,30 +594,50 @@ class FoosEnv(DirectRLEnv):
             | off_mouth_x
         )
 
-        # Diagnostic prints: every 60 steps emit a heartbeat with ball state
-        # plus per-event prints for any termination this step.
-        if not hasattr(self, "_diag_step"):
-            self._diag_step = 0
-        self._diag_step += 1
-        # Dense heartbeat for the first 50 steps after each reset (to capture
-        # what happens to a freshly-spawned ball), then sparse afterward.
-        # _diag_step is monotonic across resets so it doesn't reset itself; we
-        # detect resets via the env's episode_length_buf == 0.
-        ep_len = self.episode_length_buf[0].item()
-        if (ep_len < 50 and ep_len % 2 == 0) or self._diag_step % 60 == 1:
-            print(
-                f"[HB step={self._diag_step} ep_len={ep_len}] "
-                f"bx={bx[0].item():+.3f} by={by[0].item():+.3f} bz={bz[0].item():+.3f}  "
-                f"goal={int(self._goal_any[0])}  oob={int(self._oob[0])}  "
-                f"in_mouth={int(in_mouth[0])} on_field_z={int(on_field_z[0])} "
-                f"past_x={int(past_x_neg[0]) - int(past_x_pos[0])}",
-                flush=True,
+        # Stuck-ball detection: planar speed below threshold for N straight
+        # steps => dead ball. Counter resets to 0 the moment the ball moves,
+        # and is zeroed on episode reset in _reset_idx. A ball that's already
+        # OOB/goal this step is being reset anyway, so exclude it from the
+        # stuck set to keep the accounting clean.
+        if self._stuck_steps > 0:
+            planar_speed = self.ball.data.root_lin_vel_w[:, :2].norm(dim=-1)
+            slow = planar_speed < self.cfg.stuck_speed_threshold
+            self._stuck_counter = torch.where(
+                slow,
+                self._stuck_counter + 1,
+                torch.zeros_like(self._stuck_counter),
             )
+            self._stuck = (self._stuck_counter >= self._stuck_steps) & ~(
+                self._goal_any | self._oob
+            )
+        else:
+            self._stuck = torch.zeros_like(self._oob)
+        self._stuck_total += self._stuck.long()
+
+        # Diagnostic prints (opt-in): heartbeat with ball state, plus
+        # per-event prints for any termination this step.
+        if self.cfg.debug_heartbeat:
+            if not hasattr(self, "_diag_step"):
+                self._diag_step = 0
+            self._diag_step += 1
+            # Dense heartbeat for the first 50 steps after each reset (to
+            # capture what happens to a freshly-spawned ball), then sparse.
+            ep_len = self.episode_length_buf[0].item()
+            if (ep_len < 50 and ep_len % 2 == 0) or self._diag_step % 60 == 1:
+                print(
+                    f"[HB step={self._diag_step} ep_len={ep_len}] "
+                    f"bx={bx[0].item():+.3f} by={by[0].item():+.3f} bz={bz[0].item():+.3f}  "
+                    f"goal={int(self._goal_any[0])}  oob={int(self._oob[0])}  "
+                    f"stuck={int(self._stuck[0])}({int(self._stuck_counter[0])}) "
+                    f"in_mouth={int(in_mouth[0])} on_field_z={int(on_field_z[0])} "
+                    f"past_x={int(past_x_neg[0]) - int(past_x_pos[0])}",
+                    flush=True,
+                )
         if getattr(self.cfg, "log_terminations", False):
             for env_id in range(self.num_envs):
                 if self._goal_any[env_id]:
-                    # _goal_team1 fires when ball crossed to -x (into team
-                    # 2's net) — team 1 scored. And vice versa.
+                    # _goal_team1 fires when the ball crossed into team 2's
+                    # net (bx < -limit), meaning team 1 scored. Vice versa.
                     scorer = "team1" if self._goal_team1[env_id] else "team2"
                     net = "team2's net" if self._goal_team1[env_id] else "team1's net"
                     print(
@@ -510,8 +657,18 @@ class FoosEnv(DirectRLEnv):
                         f"by={by[env_id].item():+.3f} bz={bz[env_id].item():+.3f}",
                         flush=True,
                     )
+                elif self._stuck[env_id]:
+                    print(
+                        f"[STUCK] env={env_id} dead ball after "
+                        f"{self.cfg.stuck_time_s:.1f}s bx={bx[env_id].item():+.3f} "
+                        f"by={by[env_id].item():+.3f} bz={bz[env_id].item():+.3f}",
+                        flush=True,
+                    )
 
         terminated = self._goal_any | self._oob
+        # A stuck ball ends the point via truncation (time-limit-like: no
+        # goal, value bootstraps) rather than a hard terminal.
+        truncated = truncated | self._stuck
 
         # Update cumulative score counters before reset wipes them.
         self._score_team1 += self._goal_team1.long()
@@ -526,14 +683,20 @@ class FoosEnv(DirectRLEnv):
         ball_speed = ball_lin_vel[:, :2].norm(dim=-1)
         ball_x_speed = ball_lin_vel[:, 0].abs()
 
-        # Single policy controls all 16 rods. Score in either net counts;
-        # v_toward_goal shaping is signed by the ball's own x position so
-        # positive velocity is always "toward the closer net" (potential-
-        # based: episode-sum telescopes to |x_final| - |x_initial|, so
-        # oscillating nets zero).
-        sign_to_nearest = torch.sign(ball_pos_local[:, 0])
-        v_toward = ball_lin_vel[:, 0] * sign_to_nearest
-        goal_reward = self._goal_any.float()
+        if cfg.self_play_mode:
+            # Trainee attacks toward -X (team 2's net at x=-0.6). Reward
+            # leftward ball velocity directly. Potential-based: telescopes
+            # to (x_init - x_final), so oscillating ball nets zero.
+            v_toward = -ball_lin_vel[:, 0]
+            # Zero-sum on goals: +1 when trainee scored, -1 when scored on.
+            goal_reward = self._goal_team1.float() - self._goal_team2.float()
+        else:
+            # Single-agent: one policy controls all rods. Reward pushing
+            # the ball toward *whichever* goal is closer (nearest-goal
+            # shaping) and score in either net.
+            sign_to_nearest = torch.sign(ball_pos_local[:, 0])
+            v_toward = ball_lin_vel[:, 0] * sign_to_nearest
+            goal_reward = self._goal_any.float()
 
         action_cost = self._last_actions.square().sum(dim=-1)
         action_delta = (self._last_actions - self._prev_actions).square().sum(dim=-1)
@@ -564,6 +727,7 @@ class FoosEnv(DirectRLEnv):
             "score/goals_total": (self._score_team1 + self._score_team2).float().mean(),
             "score/team1_total": self._score_team1.float().mean(),
             "score/team2_total": self._score_team2.float().mean(),
+            "score/stuck_total": self._stuck_total.float().mean(),
             "curriculum/progress": torch.tensor(
                 min(
                     self.common_step_counter / max(1, cfg.curriculum_decay_steps),
@@ -645,3 +809,10 @@ class FoosEnv(DirectRLEnv):
         # Re-anchor the low-pass-filtered targets at the neutral pose so the
         # next episode doesn't inherit the previous one's smoothed trajectory.
         self._action_targets[env_ids] = self._joint_default[env_ids]
+        # Fresh serve => clear the stuck *counter* so the newly-placed (and
+        # possibly momentarily-stationary) ball doesn't inherit the previous
+        # point's stuck streak. Deliberately do NOT clear self._stuck here:
+        # it's fully recomputed each _get_dones, and clearing it would wipe
+        # this step's flag before an external reader (the match runner, which
+        # reads inner._stuck after env.step() returns) can see it — _reset_idx
+        # runs inside step(), after _get_dones.
